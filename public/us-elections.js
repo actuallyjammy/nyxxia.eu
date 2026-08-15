@@ -185,7 +185,7 @@
   ];
 
   const DEFAULT_STATE = {
-    uiVersion: 13,
+    uiVersion: 14,
     electionMode: 'president',
     mapMode: 'states',
     selectedState: 'PA',
@@ -205,6 +205,7 @@
       simDuration: 120,
       chamberView: 'bloc',
       mapView: 'bloc',
+      electoralModel: 'us',
     },
     government: {
       open: true,
@@ -367,7 +368,7 @@
     if (!stateByAbbr.has(out.selectedState)) out.selectedState = 'PA';
     out.electionMode = ['house', 'senate'].includes(input.electionMode) ? input.electionMode : 'president';
     out.mapMode = out.mapMode === 'counties' ? 'counties' : 'states';
-    out.uiVersion = 13;
+    out.uiVersion = 14;
     out.partiesOpen = input.uiVersion >= 2 ? input.partiesOpen !== false : true;
     out.selectedCounty = String(input.selectedCounty || '');
     out.selectedDistrict = String(input.selectedDistrict || 'PA-01');
@@ -383,6 +384,7 @@
     out.settings.simDuration = [120, 300, 600].includes(Number(out.settings.simDuration)) ? Number(out.settings.simDuration) : 120;
     out.settings.chamberView = out.settings.chamberView === 'party' ? 'party' : 'bloc';
     out.settings.mapView = out.settings.mapView === 'party' ? 'party' : 'bloc';
+    out.settings.electoralModel = out.settings.electoralModel === 'ideological' ? 'ideological' : 'us';
     out.settings.seed = Math.round(Number(out.settings.seed) || 2028);
     if (savedVersion < 4) {
       const legacyBlocs = new Set(['Democratic','Republican','Independent','Progressive','Libertarian']);
@@ -1100,11 +1102,57 @@
     return Math.max(0.08, mult);
   }
 
+  function ideologicalTerrain(state, options, baseline) {
+    const traits = stateCultureTraits(state, options, baseline);
+    const twoPartyTotal = Math.max(0.01, Number(baseline.demPct) + Number(baseline.gopPct));
+    const partisan = clamp((Number(baseline.demPct) - Number(baseline.gopPct)) / twoPartyTotal * 2.5, -1, 1, 0);
+    const urban = options.county?.urban ?? state.urban;
+    const urbanSignal = clamp((Number(urban) + app.settings.urbanTurnout - 50) / 45, -1, 1, 0);
+    return {
+      social: clamp(50 + partisan * 35 + urbanSignal * 9 + traits.progressive * 7 - traits.traditional * 7 + traits.liberty * 2, 3, 97),
+      economic: clamp(50 + partisan * 28 + urbanSignal * 4 + traits.collectivist * 9 - traits.market * 7 + traits.labor * 4, 3, 97),
+      geography: clamp(50 + urbanSignal * 42 + traits.localist * -5, 3, 97),
+      populism: clamp(50 - urbanSignal * 11 + traits.populist * 20 + traits.localist * 7, 3, 97),
+    };
+  }
+
+  function ideologicalProfileAffinity(party, state, options, baseline) {
+    const terrain = ideologicalTerrain(state, options, baseline);
+    const difference = key => (clamp(party?.[key], 0, 100, 50) - terrain[key]) / 50;
+    const distance =
+      Math.pow(difference('social'), 2) * 0.34 +
+      Math.pow(difference('economic'), 2) * 0.27 +
+      Math.pow(difference('geography'), 2) * 0.23 +
+      Math.pow(difference('populism'), 2) * 0.16;
+    const culture = stateProfileCultureScore(party, state, options, baseline);
+    let affinity = Math.exp(-distance * 1.28 + culture * 0.58);
+    if (app.settings.volatility) {
+      const key = `ideological:${app.settings.seed}:${party.id}:${state.abbr}:${options.label || ''}:${options.county?.id || ''}:${options.district?.id || ''}:${options.senateSeat?.class || ''}`;
+      affinity *= 1 + (hashNumber(key) - 0.5) * app.settings.volatility * 0.009;
+    }
+    return Math.max(0.035, affinity);
+  }
+
+  function ideologicalRaceShares(state, options, baseline, targets) {
+    const chamberRace = !!(options.district || options.senateSeat);
+    const nationalShareExponent = chamberRace ? 0.58 : options.county ? 0.64 : 0.61;
+    const rows = targets.rows.map(row => ({
+      party:row.party,
+      pct:Math.pow(Math.max(0.01, row.pct), nationalShareExponent) * ideologicalProfileAffinity(row.party, state, options, baseline),
+    }));
+    const total = rows.reduce((sum, row) => sum + row.pct, 0) || 1;
+    const normalized = rows.map(row => ({ party:row.party, pct:row.pct / total * 100 }));
+    return applyStrongholdBoost(normalized, state, options).sort((a, b) => b.pct - a.pct);
+  }
+
   function raceShares(state, options = {}) {
     const baseline = baselineForRace(state, options);
     const targets = voteTargets(state);
     if (!targets.rows.length) return [];
     if (targets.rows.length === 1) return [{ party:targets.rows[0].party, pct:100 }];
+    if (app.settings.electoralModel === 'ideological') {
+      return ideologicalRaceShares(state, options, baseline, targets);
+    }
     if (options.district || options.senateSeat) {
       const chamberShares = chamberRaceShares(state, options, baseline, targets);
       if (chamberShares) return chamberShares;
@@ -1173,7 +1221,8 @@
 
   function applyStrongholdBoost(shares, state, options = {}) {
     const chamberRace = !!(options.district || options.senateSeat);
-    const pointScale = options.senateSeat ? 0.85 : options.district ? 0.95 : options.county ? 0.34 : 0.42;
+    const ideological = app.settings.electoralModel === 'ideological';
+    const pointScale = (options.senateSeat ? 0.85 : options.district ? 0.95 : options.county ? 0.34 : 0.42) * (ideological ? 1.22 : 1);
     const boostRows = shares
       .map(row => ({
         row,
@@ -1187,8 +1236,8 @@
       .reduce((sum, row) => sum + row.pct, 0);
     const requestedAdd = boostRows.reduce((sum, item) => sum + item.add, 0);
     const cap = donorPool > 0
-      ? Math.min(chamberRace ? 16 : 10, donorPool * (chamberRace ? 0.38 : 0.25))
-      : chamberRace ? 12 : 8;
+      ? Math.min(chamberRace ? (ideological ? 21 : 16) : (ideological ? 13 : 10), donorPool * (chamberRace ? (ideological ? 0.46 : 0.38) : (ideological ? 0.31 : 0.25)))
+      : chamberRace ? (ideological ? 16 : 12) : (ideological ? 10 : 8);
     const scale = requestedAdd > cap ? cap / requestedAdd : 1;
     const addByParty = new Map(boostRows.map(item => [item.row.party.id, item.add * scale]));
     const totalAdd = [...addByParty.values()].reduce((sum, value) => sum + value, 0);
@@ -2408,6 +2457,13 @@
           <h2>Election Map</h2>
         </div>
         <div class="election-top-actions">
+          <div class="electoral-model-control" aria-label="Election model">
+            <span>Model</span>
+            <div class="electoral-model-switch">
+              <button data-action="set-electoral-model" data-electoral-model="us" title="Real US partisan baselines and coalition lanes have the strongest effect">US style</button>
+              <button data-action="set-electoral-model" data-electoral-model="ideological" title="Party ideology and each race's regional profile have the strongest effect">Ideological</button>
+            </div>
+          </div>
           <button class="election-btn" data-action="mode-president">President</button>
           <button class="election-btn" data-action="mode-senate">Senate</button>
           <button class="election-btn" data-action="mode-house">House</button>
@@ -3421,6 +3477,11 @@
     });
     document.querySelectorAll('[data-action="set-map-view"]').forEach(btn => {
       btn.classList.toggle('active', btn.dataset.mapView === app.settings.mapView);
+    });
+    document.querySelectorAll('[data-action="set-electoral-model"]').forEach(btn => {
+      const active = btn.dataset.electoralModel === app.settings.electoralModel;
+      btn.classList.toggle('active', active);
+      btn.setAttribute('aria-pressed', active ? 'true' : 'false');
     });
     const resetModeEdits = document.querySelector('[data-action="reset-mode-edits"]');
     if (resetModeEdits) {
@@ -4947,7 +5008,7 @@
   }
 
   function acknowledgeChoice(button) {
-    const group = button?.closest?.('.government-choice-row, .government-role-buttons, .agenda-tabs, .delegation-mode-control, .chamber-view-toggle, .bloc-mode-control');
+    const group = button?.closest?.('.government-choice-row, .government-role-buttons, .agenda-tabs, .delegation-mode-control, .chamber-view-toggle, .bloc-mode-control, .electoral-model-switch');
     group?.querySelectorAll('button.active').forEach(item => item.classList.remove('active'));
     button?.classList.add('active');
     acknowledgeAction(button);
@@ -5130,6 +5191,17 @@
         acknowledgeChoice(actionEl);
         renderControls();
         deferInteractiveRender(() => renderMap(calculateElection()), actionEl);
+        saveState();
+        return;
+      }
+      if (action === 'set-electoral-model') {
+        const nextModel = actionEl.dataset.electoralModel === 'ideological' ? 'ideological' : 'us';
+        if (nextModel === app.settings.electoralModel) return;
+        app.settings.electoralModel = nextModel;
+        invalidateElectionResults();
+        acknowledgeChoice(actionEl);
+        renderControls();
+        deferInteractiveRender(() => renderElectionReadouts({ includeMap:true }), actionEl);
         saveState();
         return;
       }
