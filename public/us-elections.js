@@ -174,6 +174,52 @@
     regional:{ localist:.62, independent:.23, moderate:.15 },
   };
 
+  // Incumbent caucus geography gives ideological mode a real US faction base instead of
+  // treating every district as a fresh four-axis optimization problem.
+  const HOUSE_IDEOLOGY_ANCHORS = [
+    {
+      kind:'progressive', strength:1.30,
+      districts:new Set(`AZ-03 AZ-07 CA-02 CA-08 CA-10 CA-12 CA-15 CA-17 CA-19 CA-28 CA-29 CA-30 CA-32 CA-34 CA-36 CA-37 CA-38 CA-39 CA-42 CA-43 CA-44 CA-47 CA-49 CA-51 CA-52 CO-01 CO-02 CT-03 DE-AL FL-09 FL-10 FL-24 GA-04 GA-05 HI-02 IL-01 IL-03 IL-04 IL-07 IL-09 IN-07 KY-03 LA-02 MA-02 MA-03 MA-07 MD-07 MD-08 ME-01 MI-06 MI-12 MI-13 MN-05 NC-04 NC-12 NJ-01 NJ-06 NJ-09 NJ-10 NJ-11 NJ-12 NM-01 NM-03 NV-04 NY-06 NY-07 NY-09 NY-10 NY-12 NY-13 NY-14 NY-20 OH-11 OR-01 OR-03 OR-04 OR-06 PA-02 PA-03 PA-04 PA-05 PA-12 PA-17 TX-16 TX-18 TX-20 TX-30 TX-35 TX-37 VA-04 VA-08 VT-AL WA-06 WA-07 WA-09 WI-02 WI-04`.split(' ')),
+    },
+    {
+      kind:'blue-dog', strength:1.95,
+      districts:new Set(`CA-04 CA-13 CA-21 CA-46 GA-02 ME-02 NJ-05 TX-28 TX-34 WA-03`.split(' ')),
+    },
+    {
+      kind:'governance', strength:2.05,
+      districts:new Set(`AR-03 AZ-06 CA-03 CA-22 CA-23 CA-40 CA-41 CO-03 CO-08 FL-05 FL-15 FL-26 FL-27 FL-28 GA-01 GA-07 IA-01 IL-12 IN-08 LA-05 MN-08 ND-AL NE-02 NJ-07 NV-02 NY-01 NY-02 NY-11 NY-17 NY-21 NC-11 OH-06 OH-10 OH-12 OH-14 OR-02 PA-01 PA-08 PA-15 TX-24 UT-01 VA-01 VA-02 WA-04 WA-05 WI-01`.split(' ')),
+    },
+    {
+      kind:'freedom', strength:1.35,
+      districts:new Set(`AL-01 AL-06 AZ-02 AZ-05 AZ-09 CO-04 FL-17 FL-19 GA-09 GA-10 ID-01 IL-15 IN-03 LA-03 MD-01 MO-07 OH-04 OK-02 PA-10 SC-05 TN-01 TN-04 TN-05 TN-07 TX-03 TX-21 TX-26 TX-27 VA-06 VA-09 WI-07 WY-AL`.split(' ')),
+    },
+  ];
+
+  const IDEOLOGY_ANCHOR_PROFILE_FIT = {
+    progressive:{ communist:.72, 'democratic-socialist':1, progressive:1, 'green-politics':.80, 'social-dem':.70, 'social-liberal':.28 },
+    'blue-dog':{ 'social-liberal':.40, center:1, 'christian-dem':.78, 'center-right':.68, conservative:.28, regional:.48 },
+    governance:{ center:.62, 'christian-dem':.74, 'center-right':1, conservative:.56, libertarian:.30 },
+    freedom:{ 'center-right':.20, conservative:.72, 'national-populist':1, fascist:.52, libertarian:.24 },
+  };
+
+  const STATE_IDEOLOGY_ANCHORS = {
+    VT:{ progressive:.95, center:.18, regional:.22 },
+    MA:{ progressive:.34, 'social-dem':.24 }, OR:{ progressive:.34, 'green-politics':.30 },
+    WA:{ progressive:.28, 'green-politics':.22 }, HI:{ progressive:.24, regional:.30 },
+    ME:{ center:.42, regional:.34 }, NH:{ center:.48, libertarian:.52 },
+    AK:{ center:.24, libertarian:.40, regional:.38 }, UT:{ 'center-right':.28, libertarian:.20 },
+    MI:{ progressive:.18, 'social-dem':.16 }, MN:{ progressive:.22, 'social-dem':.20 },
+  };
+
+  const SENATE_IDEOLOGY_ANCHORS = {
+    VT:{ progressive:.80, 'democratic-socialist':.90 },
+    MA:{ progressive:.38, 'social-dem':.28 }, OR:{ progressive:.30, 'green-politics':.24 },
+    MI:{ progressive:.46, 'democratic-socialist':.42, 'social-dem':.28 },
+    MN:{ progressive:.52, 'democratic-socialist':.44, 'social-dem':.30 },
+    WI:{ progressive:.22, 'social-dem':.24 }, ME:{ center:.45, regional:.28 },
+    NH:{ center:.42, 'social-liberal':.24, libertarian:.22 },
+  };
+
   const GOVERNMENT_AGENDA = [
     { key:'budget', label:'Federal budget', desc:'Keeps the government funded and tests basic governing discipline.', chambers:['house','senate'], difficulty:2, bipartisan:0.10 },
     { key:'cabinet', label:'Cabinet slate', desc:'Senate confirmation vote for the incoming administration.', chambers:['senate'], difficulty:1, bipartisan:0.08 },
@@ -1126,11 +1172,31 @@
       Math.pow(difference('populism'), 2) * 0.16;
     const culture = stateProfileCultureScore(party, state, options, baseline);
     let affinity = Math.exp(-distance * 1.28 + culture * 0.58);
+    affinity *= ideologicalOrganizationAffinity(party, state, options);
     if (app.settings.volatility) {
       const key = `ideological:${app.settings.seed}:${party.id}:${state.abbr}:${options.label || ''}:${options.county?.id || ''}:${options.district?.id || ''}:${options.senateSeat?.class || ''}`;
       affinity *= 1 + (hashNumber(key) - 0.5) * app.settings.volatility * 0.009;
     }
     return Math.max(0.035, affinity);
+  }
+
+  function ideologicalOrganizationAffinity(party, state, options = {}) {
+    const profile = resolvedProfileKey(party);
+    let multiplier = 1;
+    if (options.district?.id) {
+      HOUSE_IDEOLOGY_ANCHORS.forEach(anchor => {
+        if (!anchor.districts.has(options.district.id)) return;
+        const fit = IDEOLOGY_ANCHOR_PROFILE_FIT[anchor.kind]?.[profile] || 0;
+        multiplier *= 1 + anchor.strength * fit;
+      });
+    }
+    const stateFit = Number(STATE_IDEOLOGY_ANCHORS[state.abbr]?.[profile]) || 0;
+    multiplier *= 1 + stateFit;
+    if (options.senateSeat) {
+      const senateFit = Number(SENATE_IDEOLOGY_ANCHORS[state.abbr]?.[profile]) || 0;
+      multiplier *= 1 + senateFit;
+    }
+    return multiplier;
   }
 
   function ideologicalRaceShares(state, options, baseline, targets) {
