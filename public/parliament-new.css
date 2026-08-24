@@ -7090,12 +7090,6 @@ body.us-election-open .legend {
   color: var(--text);
 }
 
-/* ── stat numbers get a soft glow so the tally reads like a broadcast readout ── */
-.stat-card .num {
-  text-shadow: 0 0 18px currentColor;
-}
-.stat-card.abs .num { text-shadow: 0 0 14px rgba(96,116,138,0.5); }
-
 /* ── crisper keyboard focus ring, consistent across all controls ── */
 button:focus-visible,
 input:focus-visible,
