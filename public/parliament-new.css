@@ -2856,6 +2856,29 @@ body.us-election-open .legend {
 .candidate-photo.has-image span {
   opacity: 0;
 }
+.candidate-vp-photo {
+  width: 30px;
+  height: 34px;
+  margin-top: -17px;
+  margin-left: 34px;
+  z-index: 2;
+  border: 2px solid color-mix(in srgb, var(--panel) 88%, #ffffff);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--party) 24%, #061826);
+  background-size: cover;
+  background-position: center;
+  display: grid;
+  place-items: center;
+  color: #ffffff;
+  font-family: var(--font-tv), var(--font-display);
+  font-size: 8px;
+  font-weight: 900;
+  box-shadow: 0 5px 12px rgba(0,0,0,0.28);
+}
+.candidate-vp-photo.has-image span,
+.running-mate-edit-photo.has-image span {
+  opacity: 0;
+}
 .candidate-partner-row {
   display: flex;
   flex-wrap: wrap;
@@ -5877,6 +5900,41 @@ body.us-election-open .legend {
   justify-content: space-between;
   gap: 8px;
   flex-wrap: wrap;
+}
+.running-mate-editor {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 7px;
+  align-items: center;
+}
+.running-mate-edit-photo {
+  width: 34px;
+  height: 40px;
+  border-radius: 7px;
+  border: 0.5px solid rgba(125,211,252,0.24);
+  background: color-mix(in srgb, var(--party) 20%, rgba(2,12,26,0.72));
+  background-size: cover;
+  background-position: center;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  color: #e8f4fc;
+  font-family: var(--font-tv), var(--font-display);
+  font-size: 9px;
+  font-weight: 900;
+}
+.running-mate-edit-fields {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+.vp-image-status-row {
+  min-height: 20px;
+}
+.vp-image-status {
+  color: rgba(232,244,252,0.46);
+  font-family: var(--font-mono);
+  font-size: 8px;
 }
 .image-status {
   font-family: var(--font-mono);

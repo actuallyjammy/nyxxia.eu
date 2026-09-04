@@ -528,6 +528,9 @@
       short: shortCode(party.short || party.party || party.name || 'NEW'),
       candidate: String(party.candidate || party.leader || ''),
       runningMate: String(party.runningMate || party.vicePresident || party.vice || ''),
+      runningMateImage: String(party.runningMateImage || ''),
+      runningMateImageRemote: String(party.runningMateImageRemote || ''),
+      runningMateImageStatus: String(party.runningMateImageStatus || ''),
       color: /^#[0-9a-f]{6}$/i.test(String(party.color || '')) ? party.color : fallbackColor(index),
       image,
       imageRemote: String(party.imageRemote || (isRemoteImageSource(image) ? image : '')),
@@ -3027,6 +3030,7 @@
       <article class="candidate-card ${won ? 'winner' : ''}" data-candidate-card="${escapeAttr(row.displayId)}" style="--party:${escapeAttr(party.color)};--bloc:${escapeAttr(row.color || assignedBloc?.color || party.color)};--card:${escapeAttr(cardColor)}">
         <div class="candidate-photo-stack">
           <div class="candidate-photo ${party.image ? 'has-image' : ''}" ${imageStyle}><span>${escapeHtml(initials(party.candidate || party.party))}</span></div>
+          ${result?.mode === 'president' && party.runningMate ? `<div class="candidate-vp-photo ${party.runningMateImage ? 'has-image' : ''}" ${party.runningMateImage ? `style="background-image:url('${escapeAttr(party.runningMateImage)}')"` : ''} title="Vice President · ${escapeAttr(party.runningMate)}"><span>${escapeHtml(initials(party.runningMate))}</span></div>` : ''}
           ${candidatePartnerPhotos(row.partners)}
         </div>
         <div class="candidate-info">
@@ -3466,7 +3470,7 @@
       <div class="government-decision-card ${locked ? 'muted' : ''} ${changing ? 'office-changing' : ''}" style="--party:${escapeAttr(partyColor)}">
         <span class="government-mini-label">${escapeHtml(title)} · ${escapeHtml(decision.label)}</span>
         <div class="government-decision-main">
-          ${partyPortrait(party, 'government-winner-photo')}
+          ${office === 'vice' ? runningMatePortrait(party, 'government-winner-photo') : partyPortrait(party, 'government-winner-photo')}
           <div>
             <strong>${escapeHtml((office === 'vice' ? party?.runningMate : party?.candidate) || party?.candidate || party?.party || 'No party')}</strong>
             <em>${escapeHtml(decision.status || '')}</em>
@@ -4829,6 +4833,12 @@
     return `<div class="${cls} ${party?.image ? 'has-image' : ''}" ${imageStyle} title="${escapeAttr(party?.candidate || party?.party || '')}"><span>${escapeHtml(initials(party?.candidate || party?.party))}</span></div>`;
   }
 
+  function runningMatePortrait(party, cls) {
+    if (!party) return partyPortrait(null, cls);
+    const imageStyle = party.runningMateImage ? `style="background-image:url('${escapeAttr(party.runningMateImage)}')"` : '';
+    return `<div class="${cls} ${party.runningMateImage ? 'has-image' : ''}" ${imageStyle} title="${escapeAttr(party.runningMate || 'Vice-presidential candidate')}"><span>${escapeHtml(initials(party.runningMate || 'VP'))}</span></div>`;
+  }
+
   function winnerShortLabel(winner) {
     return winner?.party?.short || winner?.label || '---';
   }
@@ -5188,6 +5198,7 @@
     const stateOptions = STATE_META.map(state => `<option value="${state.abbr}">${state.abbr} · ${escapeHtml(state.name)}</option>`).join('');
     list.innerHTML = app.parties.map((party, index) => {
       const imageStyle = party.image ? `style="background-image:url('${escapeAttr(party.image)}')"` : '';
+      const runningMateImageStyle = party.runningMateImage ? `style="background-image:url('${escapeAttr(party.runningMateImage)}')"` : '';
       const presetOptions = [
         `<option value="" ${party.profile ? '' : 'selected'}>Custom profile</option>`,
         ...PROFILE_PRESETS.map(preset => `<option value="${preset.key}" ${party.profile === preset.key ? 'selected' : ''}>${escapeHtml(preset.label)}</option>`),
@@ -5217,7 +5228,19 @@
                 <select data-field="bloc" title="Bloc / coalition">${blocOptions}</select>
               </div>
               <div class="edit-line">
-                <input value="${escapeAttr(party.runningMate)}" data-field="runningMate" placeholder="Vice-presidential candidate" aria-label="Vice-presidential candidate" />
+                <div class="running-mate-editor">
+                  <div class="running-mate-edit-photo ${party.runningMateImage ? 'has-image' : ''}" ${runningMateImageStyle}><span>${escapeHtml(initials(party.runningMate || 'VP'))}</span></div>
+                  <div class="running-mate-edit-fields">
+                    <input value="${escapeAttr(party.runningMate)}" data-field="runningMate" placeholder="Vice-presidential candidate" aria-label="Vice-presidential candidate" />
+                    <div class="image-status-row vp-image-status-row">
+                      <span class="vp-image-status">${escapeHtml(party.runningMateImageStatus || (party.runningMateImage ? 'VP picture ready' : 'Type running mate for picture'))}</span>
+                      <label class="image-upload vp-image-upload ${imageNeedsUpload(party, 'vice') || party.runningMateImage ? 'visible' : ''}">
+                        <input type="file" accept="image/*" data-vp-image-upload="${escapeAttr(party.id)}" />
+                        <span>${party.runningMateImage ? 'Replace VP photo' : 'Upload VP photo'}</span>
+                      </label>
+                    </div>
+                  </div>
+                </div>
               </div>
               <div class="image-status-row">
                 <span class="image-status">${escapeHtml(party.imageStatus || (party.image ? 'Picture ready' : 'Type candidate for picture'))}</span>
@@ -5305,6 +5328,8 @@
         short:party.short,
         candidate:party.candidate,
         runningMate:party.runningMate,
+        runningMateImage:mediaSignature(party.runningMateImage),
+        runningMateImageStatus:party.runningMateImageStatus,
         color:party.color,
         image:mediaSignature(party.image),
         imageStatus:party.imageStatus,
@@ -5961,6 +5986,10 @@
         handleImageUpload(target);
         return;
       }
+      if (target instanceof HTMLInputElement && target.dataset.vpImageUpload) {
+        handleImageUpload(target, 'vice');
+        return;
+      }
       if (target instanceof HTMLElement && target.dataset.field && target.dataset.field !== 'color') {
         const party = findParty(target.closest('[data-party]')?.dataset.party);
         if (party) {
@@ -6101,6 +6130,12 @@
       if (status) status.textContent = party.imageStatus;
       queueImageFetch(party.id, party.candidate);
     }
+    if (field === 'runningMate') {
+      party.runningMateImageStatus = party.runningMate.length > 2 ? 'Searching VP picture...' : 'Type running mate for picture';
+      const status = card.querySelector('.vp-image-status');
+      if (status) status.textContent = party.runningMateImageStatus;
+      queueImageFetch(party.id, party.runningMate, false, 'vice');
+    }
   }
 
   function isSoftPartyField(field) {
@@ -6146,6 +6181,23 @@
         }
         const initialsEl = photo.querySelector('span');
         setTextIfChanged(initialsEl, initials(party.candidate || party.party));
+      }
+      let vpPhoto = card.querySelector('.candidate-vp-photo');
+      if (result.mode === 'president' && party.runningMate) {
+        if (!vpPhoto) {
+          card.querySelector('.candidate-photo')?.insertAdjacentHTML('afterend', '<div class="candidate-vp-photo"><span></span></div>');
+          vpPhoto = card.querySelector('.candidate-vp-photo');
+        }
+        setClassIfChanged(vpPhoto, 'has-image', !!party.runningMateImage);
+        const vpImageSource = party.runningMateImage || '';
+        if (candidatePhotoSources.get(vpPhoto) !== vpImageSource) {
+          vpPhoto.style.backgroundImage = vpImageSource ? `url("${String(vpImageSource).replace(/"/g, '%22')}")` : '';
+          candidatePhotoSources.set(vpPhoto, vpImageSource);
+        }
+        vpPhoto.title = `Vice President · ${party.runningMate}`;
+        setTextIfChanged(vpPhoto.querySelector('span'), initials(party.runningMate));
+      } else if (vpPhoto) {
+        vpPhoto.remove();
       }
       const partnerRow = card.querySelector('.candidate-partner-row');
       if (partnerRow) {
@@ -6222,6 +6274,22 @@
       setClassIfChanged(upload, 'visible', imageNeedsUpload(party) || !!party.image);
       const label = upload.querySelector('span');
       setTextIfChanged(label, party.image ? 'Replace photo' : 'Upload photo');
+    }
+    const vpPhoto = editorCard.querySelector('.running-mate-edit-photo');
+    if (vpPhoto) {
+      setClassIfChanged(vpPhoto, 'has-image', !!party.runningMateImage);
+      const imageSource = party.runningMateImage || '';
+      if (editorPhotoSources.get(vpPhoto) !== imageSource) {
+        vpPhoto.style.backgroundImage = imageSource ? `url("${String(imageSource).replace(/"/g, '%22')}")` : '';
+        editorPhotoSources.set(vpPhoto, imageSource);
+      }
+      setTextIfChanged(vpPhoto.querySelector('span'), initials(party.runningMate || 'VP'));
+    }
+    setTextIfChanged(editorCard.querySelector('.vp-image-status'), party.runningMateImageStatus || (party.runningMateImage ? 'VP picture ready' : 'Type running mate for picture'));
+    const vpUpload = editorCard.querySelector('.vp-image-upload');
+    if (vpUpload) {
+      setClassIfChanged(vpUpload, 'visible', imageNeedsUpload(party, 'vice') || !!party.runningMateImage);
+      setTextIfChanged(vpUpload.querySelector('span'), party.runningMateImage ? 'Replace VP photo' : 'Upload VP photo');
     }
   }
 
@@ -6518,39 +6586,43 @@
     renderControls();
   }
 
-  function queueImageFetch(partyId, name, boot = false) {
-    if (imageTimers.has(partyId)) clearTimeout(imageTimers.get(partyId));
+  function queueImageFetch(partyId, name, boot = false, role = 'candidate') {
+    const timerKey = `${partyId}:${role}`;
+    if (imageTimers.has(timerKey)) clearTimeout(imageTimers.get(timerKey));
     const clean = String(name || '').trim();
     if (clean.length < 3) return;
-    imageTimers.set(partyId, setTimeout(() => fetchCandidateImage(partyId, clean), boot ? 200 + Math.round(hashNumber(partyId) * 800) : 650));
+    imageTimers.set(timerKey, setTimeout(() => fetchCandidateImage(partyId, clean, role), boot ? 200 + Math.round(hashNumber(timerKey) * 800) : 650));
   }
 
-  function imageNeedsUpload(party) {
-    return /no picture|unavailable|upload/i.test(String(party?.imageStatus || '')) && !party?.image;
+  function imageNeedsUpload(party, role = 'candidate') {
+    const image = role === 'vice' ? party?.runningMateImage : party?.image;
+    const status = role === 'vice' ? party?.runningMateImageStatus : party?.imageStatus;
+    return /no picture|unavailable|upload/i.test(String(status || '')) && !image;
   }
 
-  async function handleImageUpload(input) {
-    const party = findParty(input.dataset.imageUpload);
+  async function handleImageUpload(input, role = 'candidate') {
+    const vice = role === 'vice';
+    const party = findParty(vice ? input.dataset.vpImageUpload : input.dataset.imageUpload);
     const file = input.files?.[0];
     input.value = '';
     if (!party || !file) return;
     if (!/^image\//i.test(file.type || '')) {
-      party.imageStatus = 'Choose an image file.';
+      party[vice ? 'runningMateImageStatus' : 'imageStatus'] = 'Choose an image file.';
       refreshPartyEditorCard(party);
       saveState();
       return;
     }
-    party.imageStatus = 'Preparing uploaded photo...';
+    party[vice ? 'runningMateImageStatus' : 'imageStatus'] = `Preparing uploaded ${vice ? 'VP ' : ''}photo...`;
     refreshPartyEditorCard(party);
     try {
-      party.image = await imageFileToCompactDataUrl(file);
-      party.imageRemote = '';
-      party.imageStatus = 'Uploaded picture ready';
+      party[vice ? 'runningMateImage' : 'image'] = await imageFileToCompactDataUrl(file);
+      party[vice ? 'runningMateImageRemote' : 'imageRemote'] = '';
+      party[vice ? 'runningMateImageStatus' : 'imageStatus'] = `Uploaded ${vice ? 'VP ' : ''}picture ready`;
       refreshPartyEditorCard(party);
       renderElectionReadouts({ preserveCandidates:true });
       saveState();
     } catch (e) {
-      party.imageStatus = 'Upload failed. Try another image.';
+      party[vice ? 'runningMateImageStatus' : 'imageStatus'] = 'Upload failed. Try another image.';
       refreshPartyEditorCard(party);
       saveState();
     }
@@ -6622,10 +6694,16 @@
     });
   }
 
-  async function fetchCandidateImage(partyId, name) {
+  async function fetchCandidateImage(partyId, name, role = 'candidate') {
     const party = findParty(partyId);
-    if (!party || party.candidate.trim() !== name) return;
-    imageTimers.delete(partyId);
+    const vice = role === 'vice';
+    const nameField = vice ? 'runningMate' : 'candidate';
+    const imageField = vice ? 'runningMateImage' : 'image';
+    const remoteField = vice ? 'runningMateImageRemote' : 'imageRemote';
+    const statusField = vice ? 'runningMateImageStatus' : 'imageStatus';
+    const timerKey = `${partyId}:${role}`;
+    if (!party || party[nameField].trim() !== name) return;
+    imageTimers.delete(timerKey);
     try {
       const title = name.replace(/\s+/g, '_');
       const res = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`);
@@ -6633,26 +6711,26 @@
         const data = await res.json();
         const src = data?.thumbnail?.source || data?.originalimage?.source;
         if (src) {
-          if (!findParty(partyId) || party.candidate.trim() !== name) return;
-          party.imageRemote = src;
+          if (!findParty(partyId) || party[nameField].trim() !== name) return;
+          party[remoteField] = src;
           try {
             const storedImage = await remoteImageToCompactDataUrl(src);
-            if (!findParty(partyId) || party.candidate.trim() !== name) return;
-            party.image = storedImage;
-            party.imageStatus = 'Picture saved locally';
+            if (!findParty(partyId) || party[nameField].trim() !== name) return;
+            party[imageField] = storedImage;
+            party[statusField] = `${vice ? 'VP p' : 'P'}icture saved locally`;
           } catch (e) {
-            if (!findParty(partyId) || party.candidate.trim() !== name) return;
-            party.image = src;
-            party.imageStatus = 'Picture ready online';
+            if (!findParty(partyId) || party[nameField].trim() !== name) return;
+            party[imageField] = src;
+            party[statusField] = `${vice ? 'VP p' : 'P'}icture ready online`;
           }
         } else {
-          party.imageStatus = 'No picture found. Upload one.';
+          party[statusField] = `No ${vice ? 'VP ' : ''}picture found. Upload one.`;
         }
       } else {
-        party.imageStatus = 'Picture unavailable. Upload one.';
+        party[statusField] = `${vice ? 'VP p' : 'P'}icture unavailable. Upload one.`;
       }
     } catch (e) {
-      party.imageStatus = 'Picture unavailable. Upload one.';
+      party[statusField] = `${vice ? 'VP p' : 'P'}icture unavailable. Upload one.`;
     }
     if (!electionViewActive()) {
       electionViewRendered = false;
@@ -6672,31 +6750,45 @@
     if (imageBooted) return;
     imageBooted = true;
     app.parties.forEach((party, index) => {
-      if (!party.image && party.candidate) queueImageFetch(party.id, party.candidate, true);
-      else if (isRemoteImageSource(party.image)) {
+      bootPartyPortrait(party, index, 'candidate');
+      bootPartyPortrait(party, index, 'vice');
+    });
+  }
+
+  function bootPartyPortrait(party, index, role) {
+    const vice = role === 'vice';
+    const nameField = vice ? 'runningMate' : 'candidate';
+    const imageField = vice ? 'runningMateImage' : 'image';
+    const remoteField = vice ? 'runningMateImageRemote' : 'imageRemote';
+    const statusField = vice ? 'runningMateImageStatus' : 'imageStatus';
+    const name = party[nameField];
+    const source = party[imageField];
+    const timerKey = `${party.id}:${role}`;
+    if (!source && name) {
+      queueImageFetch(party.id, name, true, role);
+      return;
+    }
+    if (isRemoteImageSource(source)) {
         const partyId = party.id;
-        const candidate = party.candidate;
-        const source = party.image;
         const timer = setTimeout(async () => {
-          imageTimers.delete(partyId);
+          imageTimers.delete(timerKey);
           try {
             const storedImage = await remoteImageToCompactDataUrl(source);
             const current = findParty(partyId);
-            if (!current || current.candidate !== candidate || current.image !== source) return;
-            current.image = storedImage;
-            current.imageRemote = source;
-            current.imageStatus = 'Picture saved locally';
+            if (!current || current[nameField] !== name || current[imageField] !== source) return;
+            current[imageField] = storedImage;
+            current[remoteField] = source;
+            current[statusField] = `${vice ? 'VP p' : 'P'}icture saved locally`;
             refreshPartyEditorCard(current);
             renderElectionReadouts({ preserveCandidates:true, skipGovernment:true });
             saveState();
           } catch (e) {
             const current = findParty(partyId);
-            if (current && current.image === source) current.imageStatus = 'Picture ready online';
+            if (current && current[imageField] === source) current[statusField] = `${vice ? 'VP p' : 'P'}icture ready online`;
           }
-        }, 250 + index * 180);
-        imageTimers.set(partyId, timer);
-      }
-    });
+        }, 250 + index * 180 + (vice ? 90 : 0));
+        imageTimers.set(timerKey, timer);
+    }
   }
 
   function ensureTooltip() {
