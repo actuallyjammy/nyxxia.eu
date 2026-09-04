@@ -395,6 +395,9 @@
   let activeMapCameraKey = '';
   let mapGesture = null;
   let suppressMapClickUntil = 0;
+  let mapCameraFrame = 0;
+  let wheelMapAnchor = null;
+  let wheelMapAnchorTimer = 0;
   let governmentFormationInitialized = false;
   let lastGovernmentFormationKey = '';
   const animatedWinnerBadges = new Set();
@@ -524,6 +527,7 @@
       party: String(party.party || party.name || 'New Party'),
       short: shortCode(party.short || party.party || party.name || 'NEW'),
       candidate: String(party.candidate || party.leader || ''),
+      runningMate: String(party.runningMate || party.vicePresident || party.vice || ''),
       color: /^#[0-9a-f]{6}$/i.test(String(party.color || '')) ? party.color : fallbackColor(index),
       image,
       imageRemote: String(party.imageRemote || (isRemoteImageSource(image) ? image : '')),
@@ -2353,7 +2357,7 @@
       { label:'Cabinet', complete:formation.presidentInCabinet },
     ];
     const summary = formation.formed
-      ? `${formation.president.candidate || formation.president.party} and ${formation.vicePresident.candidate || formation.vicePresident.party} lead the administration.`
+      ? `${formation.president.candidate || formation.president.party} and ${formation.vicePresident.runningMate || formation.vicePresident.candidate || formation.vicePresident.party} lead the administration.`
       : formation.president && !formation.presidentInCabinet
       ? `Assign ${formation.president.short} to the cabinet to complete the administration.`
       : 'The constitutional offices and cabinet are still being assembled.';
@@ -3034,6 +3038,7 @@
             <strong>${escapeHtml(party.candidate || 'Unnamed candidate')}</strong>
             ${won ? winnerCheckMarkup(cardColor, animateWinnerBadge) : ''}
           </div>
+          ${result?.mode === 'president' && party.runningMate ? `<span class="candidate-running-mate">VP · ${escapeHtml(party.runningMate)}</span>` : ''}
           <em>${escapeHtml(party.party)}</em>
         </div>
         <div class="candidate-score">
@@ -3463,7 +3468,7 @@
         <div class="government-decision-main">
           ${partyPortrait(party, 'government-winner-photo')}
           <div>
-            <strong>${escapeHtml(party?.candidate || party?.party || 'No party')}</strong>
+            <strong>${escapeHtml((office === 'vice' ? party?.runningMate : party?.candidate) || party?.candidate || party?.party || 'No party')}</strong>
             <em>${escapeHtml(decision.status || '')}</em>
           </div>
         </div>
@@ -4514,6 +4519,14 @@
     updateMapZoomControls(camera.zoom);
   }
 
+  function scheduleMapCamera(svg = document.getElementById('real-us-map')) {
+    if (mapCameraFrame) return;
+    mapCameraFrame = requestAnimationFrame(() => {
+      mapCameraFrame = 0;
+      applyMapCamera(svg);
+    });
+  }
+
   function updateMapZoomControls(zoom = currentMapCamera()?.zoom || MAP_MIN_ZOOM) {
     const level = document.getElementById('map-zoom-level');
     const zoomIn = document.querySelector('[data-action="map-zoom-in"]');
@@ -4554,7 +4567,7 @@
       camera.centerY = anchor.y + (camera.centerY - anchor.y) * ratio;
     }
     camera.zoom = zoom;
-    applyMapCamera();
+    scheduleMapCamera();
   }
 
   function zoomMapBy(factor) {
@@ -4568,7 +4581,7 @@
     camera.zoom = MAP_MIN_ZOOM;
     camera.centerX = camera.base.x + camera.base.width / 2;
     camera.centerY = camera.base.y + camera.base.height / 2;
-    applyMapCamera();
+    scheduleMapCamera();
   }
 
   function mapScreenScale(svg) {
@@ -4655,7 +4668,7 @@
         - (midpoint.x - mapGesture.startMidpoint.x) / mapGesture.scaleX * ratio;
       camera.centerY = mapGesture.anchor.y + (mapGesture.startCenterY - mapGesture.anchor.y) * ratio
         - (midpoint.y - mapGesture.startMidpoint.y) / mapGesture.scaleY * ratio;
-      applyMapCamera(svg);
+      scheduleMapCamera(svg);
       event.preventDefault();
       return;
     }
@@ -4673,7 +4686,7 @@
     if (!mapGesture.dragged) return;
     camera.centerX = mapGesture.startCenterX - dx / mapGesture.scaleX;
     camera.centerY = mapGesture.startCenterY - dy / mapGesture.scaleY;
-    applyMapCamera(svg);
+    scheduleMapCamera(svg);
     event.preventDefault();
   }
 
@@ -4695,7 +4708,7 @@
     if (!camera || !view || camera.zoom <= MAP_MIN_ZOOM + 0.001) return;
     camera.centerX += horizontal * view.width * 0.12;
     camera.centerY += vertical * view.height * 0.12;
-    applyMapCamera(svg);
+    scheduleMapCamera(svg);
   }
 
   function installMapNavigation() {
@@ -4707,9 +4720,15 @@
       if (!camera) return;
       event.preventDefault();
       hideTip();
-      const anchor = mapClientPoint(svg, event.clientX, event.clientY);
+      svg.classList.add('is-camera-moving');
+      if (!wheelMapAnchor) wheelMapAnchor = mapClientPoint(svg, event.clientX, event.clientY);
+      clearTimeout(wheelMapAnchorTimer);
+      wheelMapAnchorTimer = setTimeout(() => {
+        wheelMapAnchor = null;
+        svg.classList.remove('is-camera-moving');
+      }, 90);
       const factor = Math.exp(-event.deltaY * 0.0018);
-      setMapZoom(camera.zoom * factor, anchor);
+      setMapZoom(camera.zoom * factor, wheelMapAnchor);
     }, { passive:false });
     svg.addEventListener('pointerdown', event => {
       if (event.pointerType === 'mouse' && event.button !== 0) return;
@@ -5197,6 +5216,9 @@
                 <input value="${escapeAttr(party.party)}" data-field="party" placeholder="Full party name" />
                 <select data-field="bloc" title="Bloc / coalition">${blocOptions}</select>
               </div>
+              <div class="edit-line">
+                <input value="${escapeAttr(party.runningMate)}" data-field="runningMate" placeholder="Vice-presidential candidate" aria-label="Vice-presidential candidate" />
+              </div>
               <div class="image-status-row">
                 <span class="image-status">${escapeHtml(party.imageStatus || (party.image ? 'Picture ready' : 'Type candidate for picture'))}</span>
                 <label class="image-upload ${uploadVisible ? 'visible' : ''}">
@@ -5282,6 +5304,7 @@
         party:party.party,
         short:party.short,
         candidate:party.candidate,
+        runningMate:party.runningMate,
         color:party.color,
         image:mediaSignature(party.image),
         imageStatus:party.imageStatus,
@@ -6081,7 +6104,7 @@
   }
 
   function isSoftPartyField(field) {
-    return field === 'candidate' || field === 'party' || field === 'short';
+    return field === 'candidate' || field === 'runningMate' || field === 'party' || field === 'short';
   }
 
   function renderElectionReadouts(options = {}) {
@@ -6146,6 +6169,16 @@
         if (won && !existing) nameLine.insertAdjacentHTML('beforeend', winnerCheckMarkup(cardColor, claimWinnerBadgeAnimation(row)));
         if (won && existing) setStyleVarIfChanged(existing, '--party', cardColor);
         if (!won && existing) existing.remove();
+      }
+      let runningMateEl = card.querySelector('.candidate-running-mate');
+      if (result.mode === 'president' && party.runningMate) {
+        if (!runningMateEl && nameLine) {
+          nameLine.insertAdjacentHTML('afterend', '<span class="candidate-running-mate"></span>');
+          runningMateEl = card.querySelector('.candidate-running-mate');
+        }
+        setTextIfChanged(runningMateEl, `VP · ${party.runningMate}`);
+      } else if (runningMateEl) {
+        runningMateEl.remove();
       }
       const partyEl = card.querySelector('.candidate-info em');
       setTextIfChanged(partyEl, party.party);

@@ -2943,6 +2943,16 @@ body.us-election-open .legend {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.candidate-running-mate {
+  min-width: 0;
+  color: color-mix(in srgb, var(--card, var(--party)) 62%, #ffffff);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .winner-check {
   position: relative;
   width: 22px;
@@ -5115,6 +5125,15 @@ body.us-election-open .legend {
 .real-us-map.is-panning .county-path,
 .real-us-map.is-panning .district-path {
   cursor: grabbing;
+}
+.real-us-map.is-panning .state-path,
+.real-us-map.is-panning .county-path,
+.real-us-map.is-panning .district-path,
+.real-us-map.is-camera-moving .state-path,
+.real-us-map.is-camera-moving .county-path,
+.real-us-map.is-camera-moving .district-path {
+  pointer-events: none;
+  transition: none;
 }
 .split-ev-path {
   stroke: rgba(3,13,30,0.78);
