@@ -3956,10 +3956,12 @@
 
     if (app.electionMode === 'house') {
       renderHouseMap(svg, result, modeLabel, title, back);
+      finalizeMapCameraLayer(svg);
       return;
     }
     if (app.electionMode === 'senate') {
       renderSenateMap(svg, result, modeLabel, title, back);
+      finalizeMapCameraLayer(svg);
       renderSmallStateInset(result, 'senate');
       return;
     }
@@ -3998,6 +4000,7 @@
         path.addEventListener('mouseleave', hideTip);
         svg.appendChild(path);
       });
+      finalizeMapCameraLayer(svg);
       return;
     }
 
@@ -4043,6 +4046,7 @@
       svg.appendChild(path);
     });
     renderSplitEvDistrictOverlay(svg, result);
+    finalizeMapCameraLayer(svg);
     renderSmallStateInset(result, 'president');
   }
 
@@ -4204,15 +4208,21 @@
     });
     if (defs.childNodes.length) svg.appendChild(defs);
     const underlay = createMapUnderlayLayer(svg);
+    const customLayers = new Map();
+    customHouseMaps.forEach((entry, abbr) => {
+      const layer = document.createElementNS(SVG_NS, 'g');
+      layer.setAttribute('class', 'custom-house-state-layer');
+      layer.setAttribute('clip-path', `url(#custom-house-clip-${abbr})`);
+      layer.dataset.customState = abbr;
+      customLayers.set(abbr, layer);
+      svg.appendChild(layer);
+    });
     houseDistricts.forEach(district => {
       const row = byId.get(district.id) || houseResult(district);
       const path = svgPath(district.path, `district-path ${row.called ? marginClass(row.winner.margin) : 'uncalled'} ${district.id === app.selectedDistrict ? 'selected' : ''}`);
       const mapColor = mapDisplayColor(row);
       const fill = row.called ? shadeColor(mapColor, row) : '#64748b';
       const underlayPath = district.custom ? null : appendMapUnderlay(underlay, district.path, fill, row.called);
-      if (district.custom) {
-        path.setAttribute('clip-path', `url(#custom-house-clip-${district.state})`);
-      }
       path.style.setProperty('--party', mapColor);
       path.style.fill = fill;
       path.style.fillOpacity = row.called ? '1' : '0.32';
@@ -4231,7 +4241,7 @@
       path.addEventListener('mousemove', moveTip);
       path.addEventListener('mouseenter', showTip);
       path.addEventListener('mouseleave', hideTip);
-      svg.appendChild(path);
+      (customLayers.get(district.state) || svg).appendChild(path);
     });
   }
 
@@ -4478,11 +4488,28 @@
     };
   }
 
+  function finalizeMapCameraLayer(svg) {
+    if (!svg || svg.querySelector(':scope > .map-camera-layer')) return;
+    const layer = document.createElementNS(SVG_NS, 'g');
+    layer.setAttribute('class', 'map-camera-layer');
+    [...svg.children].filter(node => node.tagName.toLowerCase() !== 'defs').forEach(node => layer.appendChild(node));
+    svg.appendChild(layer);
+    applyMapCamera(svg);
+  }
+
   function applyMapCamera(svg = document.getElementById('real-us-map')) {
     const camera = currentMapCamera();
     const view = mapCameraView(camera);
     if (!svg || !camera || !view) return;
-    svg.setAttribute('viewBox', `${view.x.toFixed(5)} ${view.y.toFixed(5)} ${view.width.toFixed(5)} ${view.height.toFixed(5)}`);
+    const layer = svg.querySelector(':scope > .map-camera-layer');
+    if (layer) {
+      const translateX = camera.base.x - view.x * camera.zoom;
+      const translateY = camera.base.y - view.y * camera.zoom;
+      svg.setAttribute('viewBox', `${camera.base.x} ${camera.base.y} ${camera.base.width} ${camera.base.height}`);
+      layer.setAttribute('transform', `translate(${translateX.toFixed(4)} ${translateY.toFixed(4)}) scale(${camera.zoom.toFixed(5)})`);
+    } else {
+      svg.setAttribute('viewBox', `${view.x.toFixed(5)} ${view.y.toFixed(5)} ${view.width.toFixed(5)} ${view.height.toFixed(5)}`);
+    }
     svg.classList.toggle('is-zoomed', camera.zoom > MAP_MIN_ZOOM + 0.001);
     updateMapZoomControls(camera.zoom);
   }
@@ -4503,7 +4530,7 @@
       const point = svg.createSVGPoint();
       point.x = clientX;
       point.y = clientY;
-      const matrix = svg.getScreenCTM();
+      const matrix = (svg.querySelector(':scope > .map-camera-layer') || svg).getScreenCTM();
       if (matrix) return point.matrixTransform(matrix.inverse());
     } catch (e) {}
     const rect = svg.getBoundingClientRect();
@@ -4546,7 +4573,7 @@
 
   function mapScreenScale(svg) {
     try {
-      const matrix = svg.getScreenCTM();
+      const matrix = (svg.querySelector(':scope > .map-camera-layer') || svg).getScreenCTM();
       if (matrix) {
         return {
           x:Math.max(0.0001, Math.hypot(matrix.a, matrix.b)),
