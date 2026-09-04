@@ -2,7 +2,7 @@
   'use strict';
 
   const LS_KEY = 'us_election_lab_simple_v2';
-  const CUSTOM_HOUSE_MAPS_KEY = 'us_election_custom_house_maps_v1';
+  const CUSTOM_HOUSE_MAPS_KEY = 'us_election_custom_house_maps_v2';
   const TOTAL_POPULAR_VOTES = 158000000;
   const HOUSE_SEATS = 435;
   const SENATE_SEATS = 100;
@@ -828,6 +828,7 @@
   function loadCustomHouseMaps() {
     customHouseMaps.clear();
     try {
+      localStorage.removeItem('us_election_custom_house_maps_v1');
       const saved = JSON.parse(localStorage.getItem(CUSTOM_HOUSE_MAPS_KEY) || '{}');
       Object.entries(saved).forEach(([abbr, entry]) => {
         if (builtInHouseDistrictsByState.has(abbr) && Array.isArray(entry?.districts)) customHouseMaps.set(abbr, entry);
@@ -876,7 +877,7 @@
     const sourceBox = points.reduce((box, point) => [Math.min(box[0], point[0]), Math.min(box[1], point[1]), Math.max(box[2], point[0]), Math.max(box[3], point[1])], [Infinity, Infinity, -Infinity, -Infinity]);
     const sx = (targetBox[2] - targetBox[0]) / Math.max(1e-9, sourceBox[2] - sourceBox[0]);
     const sy = (targetBox[3] - targetBox[1]) / Math.max(1e-9, sourceBox[3] - sourceBox[1]);
-    const convert = point => [targetBox[0] + (point[0] - sourceBox[0]) * sx, targetBox[1] + (point[1] - sourceBox[1]) * sy];
+    const convert = point => [targetBox[0] + (point[0] - sourceBox[0]) * sx, targetBox[3] - (point[1] - sourceBox[1]) * sy];
     return projected.map(polygons => {
       const converted = polygons.map(polygon => polygon.map(ring => ring.map(convert)));
       const all = converted.flat(2);
@@ -4048,13 +4049,25 @@
     if (title) title.textContent = 'US House districts';
     if (back) back.style.display = 'none';
     const byId = new Map((result.districtResults || []).map(row => [row.district.id, row]));
+    const defs = document.createElementNS(SVG_NS, 'defs');
+    customHouseMaps.forEach((entry, abbr) => {
+      const clip = document.createElementNS(SVG_NS, 'clipPath');
+      clip.id = `custom-house-clip-${abbr}`;
+      (builtInHouseDistrictsByState.get(abbr) || []).forEach(district => clip.appendChild(svgPath(district.path, '')));
+      defs.appendChild(clip);
+    });
+    if (defs.childNodes.length) svg.appendChild(defs);
     const underlay = createMapUnderlayLayer(svg);
     houseDistricts.forEach(district => {
       const row = byId.get(district.id) || houseResult(district);
       const path = svgPath(district.path, `district-path ${row.called ? marginClass(row.winner.margin) : 'uncalled'} ${district.id === app.selectedDistrict ? 'selected' : ''}`);
       const mapColor = mapDisplayColor(row);
       const fill = row.called ? shadeColor(mapColor, row) : '#64748b';
-      appendMapUnderlay(underlay, district.path, fill, row.called);
+      const underlayPath = appendMapUnderlay(underlay, district.path, fill, row.called);
+      if (district.custom) {
+        path.setAttribute('clip-path', `url(#custom-house-clip-${district.state})`);
+        underlayPath?.setAttribute('clip-path', `url(#custom-house-clip-${district.state})`);
+      }
       path.style.setProperty('--party', mapColor);
       path.style.fill = fill;
       path.style.fillOpacity = row.called ? '1' : '0.32';
@@ -4128,13 +4141,14 @@
   }
 
   function appendMapUnderlay(layer, d, fill, solidFill = true) {
-    if (!layer || !d) return;
+    if (!layer || !d) return null;
     const path = document.createElementNS(SVG_NS, 'path');
     path.setAttribute('d', d);
     path.setAttribute('class', 'map-underlay-path');
     path.style.fill = solidFill ? fill : 'none';
     path.style.stroke = fill;
     layer.appendChild(path);
+    return path;
   }
 
   function shadeOpacity(row) {
