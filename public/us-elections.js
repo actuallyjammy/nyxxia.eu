@@ -2,6 +2,7 @@
   'use strict';
 
   const LS_KEY = 'us_election_lab_simple_v2';
+  const CUSTOM_HOUSE_MAPS_KEY = 'us_election_custom_house_maps_v1';
   const TOTAL_POPULAR_VOTES = 158000000;
   const HOUSE_SEATS = 435;
   const SENATE_SEATS = 100;
@@ -354,6 +355,8 @@
   const houseDistricts = [];
   const houseDistrictById = new Map();
   const houseDistrictsByState = new Map();
+  const builtInHouseDistrictsByState = new Map();
+  const customHouseMaps = new Map();
   const baselineCountyById = new Map();
   const baselineStateByAbbr = new Map();
   const baselineNational = { demPct:51.293, gopPct:46.839, otherPct:1.869, total:158433557 };
@@ -373,6 +376,9 @@
   let governmentRenderTimer = 0;
   let saveTimer = 0;
   let pendingGovernmentAnimation = null;
+  let houseMapImportState = 'VA';
+  let houseMapImportStatus = '';
+  let houseMapImportError = false;
   let governmentElectionSnapshot = null;
   let electionResultRevision = 0;
   const electionResultCache = new Map();
@@ -791,11 +797,11 @@
     const houseData = window.US_HOUSE_MAP_DATA;
     if (houseData) {
       (houseData.districts || []).forEach(district => {
-        houseDistricts.push(district);
-        houseDistrictById.set(district.id, district);
-        if (!houseDistrictsByState.has(district.state)) houseDistrictsByState.set(district.state, []);
-        houseDistrictsByState.get(district.state).push(district);
+        if (!builtInHouseDistrictsByState.has(district.state)) builtInHouseDistrictsByState.set(district.state, []);
+        builtInHouseDistrictsByState.get(district.state).push(district);
       });
+      loadCustomHouseMaps();
+      rebuildHouseDistrictIndexes();
     }
     const baseline = window.US_ELECTION_BASELINE_2020;
     if (baseline) {
@@ -803,6 +809,146 @@
       Object.entries(baseline.states || {}).forEach(([abbr, row]) => baselineStateByAbbr.set(abbr, row));
       Object.entries(baseline.counties || {}).forEach(([id, row]) => baselineCountyById.set(String(id).padStart(5, '0'), row));
     }
+  }
+
+  function rebuildHouseDistrictIndexes() {
+    houseDistricts.length = 0;
+    houseDistrictById.clear();
+    houseDistrictsByState.clear();
+    STATE_META.filter(state => state.abbr !== 'DC').forEach(state => {
+      const districts = customHouseMaps.get(state.abbr)?.districts || builtInHouseDistrictsByState.get(state.abbr) || [];
+      houseDistrictsByState.set(state.abbr, districts);
+      districts.forEach(district => {
+        houseDistricts.push(district);
+        houseDistrictById.set(district.id, district);
+      });
+    });
+  }
+
+  function loadCustomHouseMaps() {
+    customHouseMaps.clear();
+    try {
+      const saved = JSON.parse(localStorage.getItem(CUSTOM_HOUSE_MAPS_KEY) || '{}');
+      Object.entries(saved).forEach(([abbr, entry]) => {
+        if (builtInHouseDistrictsByState.has(abbr) && Array.isArray(entry?.districts)) customHouseMaps.set(abbr, entry);
+      });
+    } catch (e) {}
+  }
+
+  function saveCustomHouseMaps() {
+    localStorage.setItem(CUSTOM_HOUSE_MAPS_KEY, JSON.stringify(Object.fromEntries(customHouseMaps)));
+  }
+
+  function districtNumberFromFeature(feature, index) {
+    const props = feature?.properties || {};
+    const candidates = [props.district, props.DISTRICT, props.CD, props.CD119FP, props.GEOID, props.id, props.ID, props.NAME, feature?.id];
+    for (const candidate of candidates) {
+      const match = String(candidate ?? '').match(/(?:^|\D)(\d{1,2})(?:\D|$)/);
+      if (match) return Number(match[1]);
+    }
+    return index + 1;
+  }
+
+  function geoJsonPolygons(geometry) {
+    if (geometry?.type === 'Polygon') return [geometry.coordinates];
+    if (geometry?.type === 'MultiPolygon') return geometry.coordinates;
+    return [];
+  }
+
+  function albersPoint(coordinate) {
+    const radians = Math.PI / 180;
+    const phi = Number(coordinate[1]) * radians;
+    const lambda = Number(coordinate[0]) * radians;
+    const phi1 = 29.5 * radians;
+    const phi2 = 45.5 * radians;
+    const lambda0 = -96 * radians;
+    const n = (Math.sin(phi1) + Math.sin(phi2)) / 2;
+    const c = 1 + Math.sin(phi1) * (2 * n - Math.sin(phi1));
+    const radius = Math.sqrt(Math.max(0, c - 2 * n * Math.sin(phi))) / n;
+    const theta = n * (lambda - lambda0);
+    return [radius * Math.sin(theta), -radius * Math.cos(theta)];
+  }
+
+  function projectedGeoJsonFeatures(features, targetBox) {
+    const projected = features.map(feature => geoJsonPolygons(feature.geometry).map(polygon => polygon.map(ring => ring.map(albersPoint))));
+    const points = projected.flat(3);
+    if (!points.length) throw new Error('The file has no Polygon or MultiPolygon district shapes.');
+    const sourceBox = points.reduce((box, point) => [Math.min(box[0], point[0]), Math.min(box[1], point[1]), Math.max(box[2], point[0]), Math.max(box[3], point[1])], [Infinity, Infinity, -Infinity, -Infinity]);
+    const sx = (targetBox[2] - targetBox[0]) / Math.max(1e-9, sourceBox[2] - sourceBox[0]);
+    const sy = (targetBox[3] - targetBox[1]) / Math.max(1e-9, sourceBox[3] - sourceBox[1]);
+    const convert = point => [targetBox[0] + (point[0] - sourceBox[0]) * sx, targetBox[1] + (point[1] - sourceBox[1]) * sy];
+    return projected.map(polygons => {
+      const converted = polygons.map(polygon => polygon.map(ring => ring.map(convert)));
+      const all = converted.flat(2);
+      const bbox = all.reduce((box, point) => [Math.min(box[0], point[0]), Math.min(box[1], point[1]), Math.max(box[2], point[0]), Math.max(box[3], point[1])], [Infinity, Infinity, -Infinity, -Infinity]);
+      const path = converted.map(polygon => polygon.map(ring => ring.map((point, index) => `${index ? 'L' : 'M'}${point[0].toFixed(2)},${point[1].toFixed(2)}`).join('') + 'Z').join('')).join('');
+      return { path, bbox };
+    });
+  }
+
+  function propertyPercent(props, names) {
+    for (const name of names) {
+      const value = Number(props?.[name]);
+      if (Number.isFinite(value)) return value <= 1 ? value * 100 : value;
+    }
+    return NaN;
+  }
+
+  async function importCustomHouseMap(file, abbr) {
+    const state = stateByAbbr.get(abbr);
+    const builtIns = builtInHouseDistrictsByState.get(abbr) || [];
+    if (!state || !builtIns.length) throw new Error('Choose a state with House districts.');
+    const geojson = JSON.parse(await file.text());
+    if (geojson?.type !== 'FeatureCollection' || !Array.isArray(geojson.features)) throw new Error('Choose a GeoJSON FeatureCollection.');
+    const features = geojson.features.filter(feature => geoJsonPolygons(feature.geometry).length);
+    if (features.length !== builtIns.length) throw new Error(`${state.name} requires ${builtIns.length} districts; this file contains ${features.length}.`);
+    const numbered = features.map((feature, index) => ({ feature, number:districtNumberFromFeature(feature, index) })).sort((a, b) => a.number - b.number);
+    if (new Set(numbered.map(item => item.number)).size !== builtIns.length) throw new Error('District identifiers must be unique.');
+    const shapes = projectedGeoJsonFeatures(numbered.map(item => item.feature), unionBbox(builtIns.map(district => district.bbox).filter(Boolean)));
+    const districts = numbered.map((item, index) => {
+      const number = index + 1;
+      const id = `${abbr}-${String(number).padStart(2, '0')}`;
+      const fallback = builtIns.find(district => district.id === id) || builtIns[index];
+      const props = item.feature.properties || {};
+      const demPct = propertyPercent(props, ['DemPct','DEM_PCT','demPct','dem_pct','D_PCT']);
+      const gopPct = propertyPercent(props, ['RepPct','GopPct','REP_PCT','GOP_PCT','repPct','gopPct','rep_pct','R_PCT']);
+      const hasVoteBaseline = Number.isFinite(demPct) && Number.isFinite(gopPct) && demPct + gopPct > 1;
+      const resolvedDem = hasVoteBaseline ? demPct : fallback.demPct;
+      const resolvedGop = hasVoteBaseline ? gopPct : fallback.gopPct;
+      const margin = resolvedGop - resolvedDem;
+      return {
+        ...fallback, id, geoid:id, state:abbr, stateName:state.name,
+        district:String(number).padStart(2, '0'), name:String(number), label:id,
+        path:shapes[index].path, bbox:shapes[index].bbox,
+        demPct:resolvedDem, gopPct:resolvedGop, otherPct:Math.max(0, 100 - resolvedDem - resolvedGop),
+        lean:margin / 2,
+        pviValue:hasVoteBaseline ? margin : fallback.pviValue,
+        pvi:hasVoteBaseline ? `${margin < 0 ? 'D' : 'R'}+${Math.abs(margin).toFixed(1)}` : fallback.pvi,
+        urban:hasVoteBaseline ? clamp(50 - margin * 0.9, 18, 94, fallback.urban) : fallback.urban,
+        total:Number(props.TotalVotes || props.totalVotes || props.TotalPop || props.TOTALPOP) || fallback.total,
+        custom:true,
+      };
+    });
+    customHouseMaps.set(abbr, { fileName:file.name, importedAt:Date.now(), districts });
+    rebuildHouseDistrictIndexes();
+    try {
+      saveCustomHouseMaps();
+      houseMapImportStatus = `${abbr} custom map active and saved.`;
+    } catch (e) {
+      houseMapImportStatus = `${abbr} custom map active for this session; browser storage is full.`;
+    }
+    houseMapImportError = false;
+    invalidateElectionResults();
+  }
+
+  function resetCustomHouseMap(abbr) {
+    if (!customHouseMaps.delete(abbr)) return false;
+    rebuildHouseDistrictIndexes();
+    try { saveCustomHouseMaps(); } catch (e) {}
+    houseMapImportStatus = `${abbr} restored to the built-in CD119 map.`;
+    houseMapImportError = false;
+    invalidateElectionResults();
+    return true;
   }
 
   function partyLane(party) {
@@ -2605,6 +2751,14 @@
               <h3 id="map-title">United States</h3>
             </div>
             <div class="map-head-actions">
+              <div class="house-map-import" id="house-map-import" hidden>
+                <select id="house-map-import-state" aria-label="State for custom House map">
+                  ${STATE_META.filter(state => state.abbr !== 'DC').map(state => `<option value="${state.abbr}">${state.abbr}</option>`).join('')}
+                </select>
+                <input id="house-map-import-file" type="file" accept=".geojson,.json,application/geo+json,application/json" hidden />
+                <button class="election-btn small" data-action="import-house-map" type="button">Import map</button>
+                <button class="election-btn small" data-action="reset-house-map" type="button">Built-in</button>
+              </div>
               <div class="chamber-view-toggle map-view-toggle" aria-label="Map grouping">
                 <button data-action="set-map-view" data-map-view="bloc" type="button">Bloc</button>
                 <button data-action="set-map-view" data-map-view="party" type="button">Party</button>
@@ -2613,6 +2767,7 @@
               <button class="election-btn small" data-action="back-states">Back to states</button>
             </div>
           </div>
+          <div class="house-map-import-status" id="house-map-import-status" hidden></div>
           <div class="election-map-stage" id="election-map-stage">
             <svg class="real-us-map" id="real-us-map" role="img" aria-label="US election map" tabindex="0" preserveAspectRatio="xMidYMid meet" shape-rendering="geometricPrecision"></svg>
             <div class="map-zoom-controls" aria-label="Map zoom controls">
@@ -3559,6 +3714,24 @@
         ? `Clear ${editCount} manual ${app.electionMode === 'house' ? 'House' : app.electionMode === 'senate' ? 'Senate' : 'presidential'} race ${editCount === 1 ? 'override' : 'overrides'}`
         : 'No manual race overrides in this mode';
     }
+    const importTools = document.getElementById('house-map-import');
+    const importState = document.getElementById('house-map-import-state');
+    const resetHouseMap = document.querySelector('[data-action="reset-house-map"]');
+    const importStatus = document.getElementById('house-map-import-status');
+    if (importTools) importTools.hidden = app.electionMode !== 'house';
+    if (importState) {
+      if (!houseMapImportState || !stateByAbbr.has(houseMapImportState)) houseMapImportState = app.selectedState === 'DC' ? 'VA' : app.selectedState;
+      importState.value = houseMapImportState;
+    }
+    if (resetHouseMap) {
+      resetHouseMap.disabled = !customHouseMaps.has(houseMapImportState);
+      resetHouseMap.title = customHouseMaps.has(houseMapImportState) ? `Restore ${houseMapImportState} to the built-in map` : `${houseMapImportState} is using the built-in map`;
+    }
+    if (importStatus) {
+      importStatus.hidden = app.electionMode !== 'house' || !houseMapImportStatus;
+      importStatus.textContent = houseMapImportStatus;
+      importStatus.classList.toggle('error', houseMapImportError);
+    }
     const blocBtn = document.querySelector('[data-action="toggle-bloc-mode"]');
     if (blocBtn) {
       blocBtn.textContent = app.settings.coalitionMode ? 'Electoral bloc calls on' : 'Electoral bloc calls off';
@@ -3871,12 +4044,12 @@
     const data = window.US_HOUSE_MAP_DATA;
     if (!data) return;
     setSvgViewBox(svg, data.viewBox || [0, 0, 960, 600], 'house');
-    if (modeLabel) modeLabel.textContent = 'House · Census 2025 CD119';
+    if (modeLabel) modeLabel.textContent = customHouseMaps.size ? `House · CD119 + ${customHouseMaps.size} custom` : 'House · Census 2025 CD119';
     if (title) title.textContent = 'US House districts';
     if (back) back.style.display = 'none';
     const byId = new Map((result.districtResults || []).map(row => [row.district.id, row]));
     const underlay = createMapUnderlayLayer(svg);
-    (data.districts || []).forEach(district => {
+    houseDistricts.forEach(district => {
       const row = byId.get(district.id) || houseResult(district);
       const path = svgPath(district.path, `district-path ${row.called ? marginClass(row.winner.margin) : 'uncalled'} ${district.id === app.selectedDistrict ? 'selected' : ''}`);
       const mapColor = mapDisplayColor(row);
@@ -5132,6 +5305,18 @@
         if (action === 'map-zoom-reset') resetMapCamera();
         return;
       }
+      if (action === 'import-house-map') {
+        document.getElementById('house-map-import-file')?.click();
+        return;
+      }
+      if (action === 'reset-house-map') {
+        if (resetCustomHouseMap(houseMapImportState)) {
+          if (app.selectedState === houseMapImportState) app.selectedDistrict = `${houseMapImportState}-01`;
+          renderControls();
+          deferInteractiveRender(() => renderElectionReadouts({ includeMap:true }), actionEl);
+        }
+        return;
+      }
       if (action === 'toggle-parties') {
         app.partiesOpen = !app.partiesOpen;
         const drawer = document.getElementById('party-drawer');
@@ -5491,6 +5676,35 @@
     });
     wrap.addEventListener('change', event => {
       const target = event.target;
+      if (target instanceof HTMLSelectElement && target.id === 'house-map-import-state') {
+        houseMapImportState = target.value;
+        houseMapImportStatus = customHouseMaps.has(houseMapImportState)
+          ? `${houseMapImportState} is using ${customHouseMaps.get(houseMapImportState).fileName || 'a custom map'}.`
+          : `${houseMapImportState} is using the built-in CD119 map.`;
+        houseMapImportError = false;
+        renderControls();
+        return;
+      }
+      if (target instanceof HTMLInputElement && target.id === 'house-map-import-file') {
+        const file = target.files?.[0];
+        target.value = '';
+        if (!file) return;
+        houseMapImportStatus = `Importing ${file.name}...`;
+        houseMapImportError = false;
+        renderControls();
+        importCustomHouseMap(file, houseMapImportState).then(() => {
+          app.selectedState = houseMapImportState;
+          app.selectedDistrict = `${houseMapImportState}-01`;
+          app.editingRace = '';
+          renderControls();
+          renderElectionReadouts({ includeMap:true });
+        }).catch(error => {
+          houseMapImportStatus = error?.message || 'The custom map could not be imported.';
+          houseMapImportError = true;
+          renderControls();
+        });
+        return;
+      }
       if (target instanceof HTMLInputElement && target.dataset.ballotState) {
         const party = findParty(target.dataset.party);
         if (party) {

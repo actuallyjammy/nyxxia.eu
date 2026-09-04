@@ -4766,6 +4766,44 @@ body.us-election-open .legend {
   flex-wrap: wrap;
   gap: 8px;
 }
+.house-map-import {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--panel) 84%, transparent);
+}
+.house-map-import[hidden] {
+  display: none;
+}
+.house-map-import select {
+  width: 58px;
+  min-height: 34px;
+  padding: 0 22px 0 9px;
+  border: 0;
+  border-radius: 5px;
+  background-color: transparent;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 800;
+}
+.house-map-import .election-btn {
+  min-height: 34px;
+}
+.house-map-import-status {
+  margin: -4px 0 9px auto;
+  width: fit-content;
+  max-width: 100%;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+.house-map-import-status.error {
+  color: #fb7185;
+}
 .map-reset-edits {
   position: relative;
   transition: color 0.14s ease, border-color 0.14s ease, background 0.14s ease, box-shadow 0.14s ease, transform 0.12s ease;
@@ -6895,6 +6933,13 @@ body.us-election-open .legend {
   }
   .election-top-actions {
     justify-content: flex-start;
+  }
+  .house-map-import {
+    order: -1;
+    width: 100%;
+  }
+  .house-map-import .election-btn:last-child {
+    margin-left: auto;
   }
   .electoral-model-control {
     order: -1;
