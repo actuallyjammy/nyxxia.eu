@@ -952,6 +952,18 @@
     return true;
   }
 
+  function resetAllCustomHouseMaps() {
+    const count = customHouseMaps.size;
+    if (!count) return 0;
+    customHouseMaps.clear();
+    rebuildHouseDistrictIndexes();
+    try { saveCustomHouseMaps(); } catch (e) {}
+    houseMapImportStatus = `All ${count} custom ${count === 1 ? 'map' : 'maps'} restored to built-in CD119.`;
+    houseMapImportError = false;
+    invalidateElectionResults();
+    return count;
+  }
+
   function partyLane(party) {
     const alignment = partyAlignmentScore(party);
     if (alignment <= 45) return 'left';
@@ -2753,12 +2765,17 @@
             </div>
             <div class="map-head-actions">
               <div class="house-map-import" id="house-map-import" hidden>
-                <select id="house-map-import-state" aria-label="State for custom House map">
-                  ${STATE_META.filter(state => state.abbr !== 'DC').map(state => `<option value="${state.abbr}">${state.abbr}</option>`).join('')}
-                </select>
+                <span class="house-map-import-label">Custom districts</span>
+                <label class="house-map-state-select">
+                  <span>State</span>
+                  <select id="house-map-import-state" aria-label="State for custom House map">
+                    ${STATE_META.filter(state => state.abbr !== 'DC').map(state => `<option value="${state.abbr}">${state.abbr} · ${escapeHtml(state.name)}</option>`).join('')}
+                  </select>
+                </label>
                 <input id="house-map-import-file" type="file" accept=".geojson,.json,application/geo+json,application/json" hidden />
-                <button class="election-btn small" data-action="import-house-map" type="button">Import map</button>
-                <button class="election-btn small" data-action="reset-house-map" type="button">Built-in</button>
+                <button class="election-btn small house-map-import-btn" data-action="import-house-map" type="button">Import GeoJSON</button>
+                <button class="election-btn small" data-action="reset-house-map" type="button">Reset state</button>
+                <button class="election-btn small house-map-reset-all" data-action="reset-all-house-maps" type="button">Reset all</button>
               </div>
               <div class="chamber-view-toggle map-view-toggle" aria-label="Map grouping">
                 <button data-action="set-map-view" data-map-view="bloc" type="button">Bloc</button>
@@ -3718,6 +3735,7 @@
     const importTools = document.getElementById('house-map-import');
     const importState = document.getElementById('house-map-import-state');
     const resetHouseMap = document.querySelector('[data-action="reset-house-map"]');
+    const resetAllHouseMaps = document.querySelector('[data-action="reset-all-house-maps"]');
     const importStatus = document.getElementById('house-map-import-status');
     if (importTools) importTools.hidden = app.electionMode !== 'house';
     if (importState) {
@@ -3728,10 +3746,21 @@
       resetHouseMap.disabled = !customHouseMaps.has(houseMapImportState);
       resetHouseMap.title = customHouseMaps.has(houseMapImportState) ? `Restore ${houseMapImportState} to the built-in map` : `${houseMapImportState} is using the built-in map`;
     }
+    if (resetAllHouseMaps) {
+      resetAllHouseMaps.disabled = customHouseMaps.size === 0;
+      resetAllHouseMaps.textContent = customHouseMaps.size ? `Reset all (${customHouseMaps.size})` : 'Reset all';
+      resetAllHouseMaps.title = customHouseMaps.size ? `Restore all ${customHouseMaps.size} custom state maps` : 'No custom state maps are active';
+    }
+    importTools?.classList.toggle('has-custom-map', customHouseMaps.has(houseMapImportState));
     if (importStatus) {
-      importStatus.hidden = app.electionMode !== 'house' || !houseMapImportStatus;
-      importStatus.textContent = houseMapImportStatus;
+      const selectedEntry = customHouseMaps.get(houseMapImportState);
+      const defaultStatus = selectedEntry
+        ? `${houseMapImportState} custom map · ${selectedEntry.fileName || 'GeoJSON'}${customHouseMaps.size > 1 ? ` · ${customHouseMaps.size} custom states active` : ''}`
+        : `${houseMapImportState} · built-in CD119 map${customHouseMaps.size ? ` · ${customHouseMaps.size} custom ${customHouseMaps.size === 1 ? 'state' : 'states'} active` : ''}`;
+      importStatus.hidden = app.electionMode !== 'house';
+      importStatus.textContent = houseMapImportStatus || defaultStatus;
       importStatus.classList.toggle('error', houseMapImportError);
+      importStatus.classList.toggle('custom', !!selectedEntry && !houseMapImportError);
     }
     const blocBtn = document.querySelector('[data-action="toggle-bloc-mode"]');
     if (blocBtn) {
@@ -5326,6 +5355,14 @@
       if (action === 'reset-house-map') {
         if (resetCustomHouseMap(houseMapImportState)) {
           if (app.selectedState === houseMapImportState) app.selectedDistrict = `${houseMapImportState}-01`;
+          renderControls();
+          deferInteractiveRender(() => renderElectionReadouts({ includeMap:true }), actionEl);
+        }
+        return;
+      }
+      if (action === 'reset-all-house-maps') {
+        if (resetAllCustomHouseMaps()) {
+          app.selectedDistrict = houseDistrictById.has(app.selectedDistrict) ? app.selectedDistrict : `${houseMapImportState}-01`;
           renderControls();
           deferInteractiveRender(() => renderElectionReadouts({ includeMap:true }), actionEl);
         }
