@@ -3,6 +3,8 @@
 
   const LS_KEY = 'us_election_lab_simple_v2';
   const CUSTOM_HOUSE_MAPS_KEY = 'us_election_custom_house_maps_v2';
+  const CUSTOM_MAP_DB = 'us_election_assets_v1';
+  const CUSTOM_MAP_STORE = 'houseMaps';
   const TOTAL_POPULAR_VOTES = 158000000;
   const HOUSE_SEATS = 435;
   const SENATE_SEATS = 100;
@@ -379,6 +381,7 @@
   let houseMapImportState = 'VA';
   let houseMapImportStatus = '';
   let houseMapImportError = false;
+  let customHouseMapDbPromise = null;
   let governmentElectionSnapshot = null;
   let electionResultRevision = 0;
   const electionResultCache = new Map();
@@ -827,17 +830,82 @@
 
   function loadCustomHouseMaps() {
     customHouseMaps.clear();
+    let legacy = {};
     try {
       localStorage.removeItem('us_election_custom_house_maps_v1');
-      const saved = JSON.parse(localStorage.getItem(CUSTOM_HOUSE_MAPS_KEY) || '{}');
-      Object.entries(saved).forEach(([abbr, entry]) => {
+      legacy = JSON.parse(localStorage.getItem(CUSTOM_HOUSE_MAPS_KEY) || '{}');
+      Object.entries(legacy).forEach(([abbr, entry]) => {
         if (builtInHouseDistrictsByState.has(abbr) && Array.isArray(entry?.districts)) customHouseMaps.set(abbr, entry);
       });
     } catch (e) {}
+    loadCustomHouseMapsFromDb(legacy);
   }
 
-  function saveCustomHouseMaps() {
-    localStorage.setItem(CUSTOM_HOUSE_MAPS_KEY, JSON.stringify(Object.fromEntries(customHouseMaps)));
+  function openCustomMapDb() {
+    if (customHouseMapDbPromise) return customHouseMapDbPromise;
+    customHouseMapDbPromise = new Promise((resolve, reject) => {
+      if (!window.indexedDB) {
+        reject(new Error('IndexedDB is unavailable'));
+        return;
+      }
+      const request = indexedDB.open(CUSTOM_MAP_DB, 1);
+      request.onupgradeneeded = () => {
+        if (!request.result.objectStoreNames.contains(CUSTOM_MAP_STORE)) request.result.createObjectStore(CUSTOM_MAP_STORE, { keyPath:'abbr' });
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error || new Error('Map storage could not be opened'));
+    });
+    return customHouseMapDbPromise;
+  }
+
+  async function customMapDbRequest(mode, operation) {
+    const db = await openCustomMapDb();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(CUSTOM_MAP_STORE, mode);
+      const store = transaction.objectStore(CUSTOM_MAP_STORE);
+      let request;
+      try { request = operation(store); } catch (error) { reject(error); return; }
+      transaction.oncomplete = () => resolve(request?.result);
+      transaction.onerror = () => reject(transaction.error || request?.error || new Error('Map storage failed'));
+      transaction.onabort = () => reject(transaction.error || new Error('Map storage was interrupted'));
+    });
+  }
+
+  async function loadCustomHouseMapsFromDb(legacy) {
+    try {
+      const stored = await customMapDbRequest('readonly', store => store.getAll());
+      (stored || []).forEach(entry => {
+        if (builtInHouseDistrictsByState.has(entry.abbr) && Array.isArray(entry.districts)) customHouseMaps.set(entry.abbr, entry);
+      });
+      const legacyEntries = Object.entries(legacy || {}).filter(([abbr, entry]) => builtInHouseDistrictsByState.has(abbr) && Array.isArray(entry?.districts));
+      if (legacyEntries.length) {
+        await Promise.all(legacyEntries.map(([abbr, entry]) => saveCustomHouseMap({ ...entry, abbr })));
+        localStorage.removeItem(CUSTOM_HOUSE_MAPS_KEY);
+      }
+      rebuildHouseDistrictIndexes();
+      invalidateElectionResults();
+      if (electionViewRendered) {
+        renderControls();
+        renderElectionReadouts({ includeMap:true, skipGovernment:true });
+      }
+    } catch (e) {
+      if (!customHouseMaps.size) {
+        houseMapImportStatus = 'Persistent custom-map storage is unavailable in this browser.';
+        houseMapImportError = true;
+      }
+    }
+  }
+
+  function saveCustomHouseMap(entry) {
+    return customMapDbRequest('readwrite', store => store.put(entry));
+  }
+
+  function deleteCustomHouseMap(abbr) {
+    return customMapDbRequest('readwrite', store => store.delete(abbr));
+  }
+
+  function clearCustomHouseMapDb() {
+    return customMapDbRequest('readwrite', store => store.clear());
   }
 
   function districtNumberFromFeature(feature, index) {
@@ -870,6 +938,52 @@
     return [radius * Math.sin(theta), -radius * Math.cos(theta)];
   }
 
+  function pointSegmentDistanceSq(point, start, end) {
+    let x = start[0];
+    let y = start[1];
+    const dx = end[0] - x;
+    const dy = end[1] - y;
+    if (dx || dy) {
+      const t = clamp(((point[0] - x) * dx + (point[1] - y) * dy) / (dx * dx + dy * dy), 0, 1, 0);
+      x += dx * t;
+      y += dy * t;
+    }
+    const px = point[0] - x;
+    const py = point[1] - y;
+    return px * px + py * py;
+  }
+
+  function simplifyMapRing(points, tolerance = 0.025) {
+    if (points.length < 8) return points;
+    const closed = points[0][0] === points[points.length - 1][0] && points[0][1] === points[points.length - 1][1];
+    const source = closed ? points.slice(0, -1) : points.slice();
+    const keep = new Uint8Array(source.length);
+    keep[0] = 1;
+    keep[source.length - 1] = 1;
+    const stack = [[0, source.length - 1]];
+    const threshold = tolerance * tolerance;
+    while (stack.length) {
+      const [start, end] = stack.pop();
+      let best = threshold;
+      let bestIndex = -1;
+      for (let index = start + 1; index < end; index += 1) {
+        const distance = pointSegmentDistanceSq(source[index], source[start], source[end]);
+        if (distance > best) {
+          best = distance;
+          bestIndex = index;
+        }
+      }
+      if (bestIndex > 0) {
+        keep[bestIndex] = 1;
+        stack.push([start, bestIndex], [bestIndex, end]);
+      }
+    }
+    const simplified = source.filter((point, index) => keep[index]);
+    if (simplified.length < 3) return points;
+    if (closed) simplified.push(simplified[0]);
+    return simplified;
+  }
+
   function projectedGeoJsonFeatures(features, targetBox) {
     const projected = features.map(feature => geoJsonPolygons(feature.geometry).map(polygon => polygon.map(ring => ring.map(albersPoint))));
     const points = projected.flat(3);
@@ -879,7 +993,7 @@
     const sy = (targetBox[3] - targetBox[1]) / Math.max(1e-9, sourceBox[3] - sourceBox[1]);
     const convert = point => [targetBox[0] + (point[0] - sourceBox[0]) * sx, targetBox[3] - (point[1] - sourceBox[1]) * sy];
     return projected.map(polygons => {
-      const converted = polygons.map(polygon => polygon.map(ring => ring.map(convert)));
+      const converted = polygons.map(polygon => polygon.map(ring => simplifyMapRing(ring.map(convert))));
       const all = converted.flat(2);
       const bbox = all.reduce((box, point) => [Math.min(box[0], point[0]), Math.min(box[1], point[1]), Math.max(box[2], point[0]), Math.max(box[3], point[1])], [Infinity, Infinity, -Infinity, -Infinity]);
       const path = converted.map(polygon => polygon.map(ring => ring.map((point, index) => `${index ? 'L' : 'M'}${point[0].toFixed(2)},${point[1].toFixed(2)}`).join('') + 'Z').join('')).join('');
@@ -930,13 +1044,16 @@
         custom:true,
       };
     });
-    customHouseMaps.set(abbr, { fileName:file.name, importedAt:Date.now(), districts });
+    const entry = { abbr, fileName:file.name, importedAt:Date.now(), districts };
+    customHouseMaps.set(abbr, entry);
     rebuildHouseDistrictIndexes();
     try {
-      saveCustomHouseMaps();
+      await saveCustomHouseMap(entry);
+      localStorage.removeItem(CUSTOM_HOUSE_MAPS_KEY);
+      navigator.storage?.persist?.().catch(() => {});
       houseMapImportStatus = `${abbr} custom map active and saved.`;
     } catch (e) {
-      houseMapImportStatus = `${abbr} custom map active for this session; browser storage is full.`;
+      houseMapImportStatus = `${abbr} custom map active for this session; persistent storage failed.`;
     }
     houseMapImportError = false;
     invalidateElectionResults();
@@ -945,7 +1062,7 @@
   function resetCustomHouseMap(abbr) {
     if (!customHouseMaps.delete(abbr)) return false;
     rebuildHouseDistrictIndexes();
-    try { saveCustomHouseMaps(); } catch (e) {}
+    deleteCustomHouseMap(abbr).catch(() => {});
     houseMapImportStatus = `${abbr} restored to the built-in CD119 map.`;
     houseMapImportError = false;
     invalidateElectionResults();
@@ -957,7 +1074,7 @@
     if (!count) return 0;
     customHouseMaps.clear();
     rebuildHouseDistrictIndexes();
-    try { saveCustomHouseMaps(); } catch (e) {}
+    clearCustomHouseMapDb().catch(() => {});
     houseMapImportStatus = `All ${count} custom ${count === 1 ? 'map' : 'maps'} restored to built-in CD119.`;
     houseMapImportError = false;
     invalidateElectionResults();
@@ -4092,10 +4209,9 @@
       const path = svgPath(district.path, `district-path ${row.called ? marginClass(row.winner.margin) : 'uncalled'} ${district.id === app.selectedDistrict ? 'selected' : ''}`);
       const mapColor = mapDisplayColor(row);
       const fill = row.called ? shadeColor(mapColor, row) : '#64748b';
-      const underlayPath = appendMapUnderlay(underlay, district.path, fill, row.called);
+      const underlayPath = district.custom ? null : appendMapUnderlay(underlay, district.path, fill, row.called);
       if (district.custom) {
         path.setAttribute('clip-path', `url(#custom-house-clip-${district.state})`);
-        underlayPath?.setAttribute('clip-path', `url(#custom-house-clip-${district.state})`);
       }
       path.style.setProperty('--party', mapColor);
       path.style.fill = fill;
