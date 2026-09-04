@@ -5216,7 +5216,10 @@
       return `
         <article class="party-edit-card" data-party="${escapeAttr(party.id)}" style="--party:${escapeAttr(party.color)}">
           <div class="party-edit-main">
-            <div class="edit-photo ${party.image ? 'has-image' : ''}" ${imageStyle}><span>${escapeHtml(initials(party.candidate || party.party))}</span></div>
+            <div class="edit-photo-stack">
+              <div class="edit-photo ${party.image ? 'has-image' : ''}" ${imageStyle}><span>${escapeHtml(initials(party.candidate || party.party))}</span></div>
+              ${party.runningMate ? `<div class="running-mate-edit-photo ${party.runningMateImage ? 'has-image' : ''}" ${runningMateImageStyle} title="Vice President · ${escapeAttr(party.runningMate)}"><span>${escapeHtml(initials(party.runningMate))}</span></div>` : ''}
+            </div>
             <div class="edit-fields">
               <div class="edit-line three">
                 <input value="${escapeAttr(party.candidate)}" data-field="candidate" placeholder="Candidate name" />
@@ -5228,19 +5231,14 @@
                 <select data-field="bloc" title="Bloc / coalition">${blocOptions}</select>
               </div>
               <div class="edit-line">
-                <div class="running-mate-editor">
-                  <div class="running-mate-edit-photo ${party.runningMateImage ? 'has-image' : ''}" ${runningMateImageStyle}><span>${escapeHtml(initials(party.runningMate || 'VP'))}</span></div>
-                  <div class="running-mate-edit-fields">
-                    <input value="${escapeAttr(party.runningMate)}" data-field="runningMate" placeholder="Vice-presidential candidate" aria-label="Vice-presidential candidate" />
-                    <div class="image-status-row vp-image-status-row">
-                      <span class="vp-image-status">${escapeHtml(party.runningMateImageStatus || (party.runningMateImage ? 'VP picture ready' : 'Type running mate for picture'))}</span>
-                      <label class="image-upload vp-image-upload ${imageNeedsUpload(party, 'vice') || party.runningMateImage ? 'visible' : ''}">
-                        <input type="file" accept="image/*" data-vp-image-upload="${escapeAttr(party.id)}" />
-                        <span>${party.runningMateImage ? 'Replace VP photo' : 'Upload VP photo'}</span>
-                      </label>
-                    </div>
-                  </div>
-                </div>
+                <input value="${escapeAttr(party.runningMate)}" data-field="runningMate" placeholder="Vice-presidential candidate" aria-label="Vice-presidential candidate" />
+              </div>
+              <div class="image-status-row vp-image-status-row">
+                <span class="vp-image-status">${escapeHtml(party.runningMateImageStatus || (party.runningMateImage ? 'VP picture ready' : 'Type running mate for picture'))}</span>
+                <label class="image-upload vp-image-upload ${imageNeedsUpload(party, 'vice') || party.runningMateImage ? 'visible' : ''}">
+                  <input type="file" accept="image/*" data-vp-image-upload="${escapeAttr(party.id)}" />
+                  <span>${party.runningMateImage ? 'Replace VP photo' : 'Upload VP photo'}</span>
+                </label>
               </div>
               <div class="image-status-row">
                 <span class="image-status">${escapeHtml(party.imageStatus || (party.image ? 'Picture ready' : 'Type candidate for picture'))}</span>
@@ -6275,7 +6273,15 @@
       const label = upload.querySelector('span');
       setTextIfChanged(label, party.image ? 'Replace photo' : 'Upload photo');
     }
-    const vpPhoto = editorCard.querySelector('.running-mate-edit-photo');
+    let vpPhoto = editorCard.querySelector('.running-mate-edit-photo');
+    const photoStack = editorCard.querySelector('.edit-photo-stack');
+    if (party.runningMate && !vpPhoto && photoStack) {
+      photoStack.insertAdjacentHTML('beforeend', '<div class="running-mate-edit-photo"><span></span></div>');
+      vpPhoto = editorCard.querySelector('.running-mate-edit-photo');
+    } else if (!party.runningMate && vpPhoto) {
+      vpPhoto.remove();
+      vpPhoto = null;
+    }
     if (vpPhoto) {
       setClassIfChanged(vpPhoto, 'has-image', !!party.runningMateImage);
       const imageSource = party.runningMateImage || '';
@@ -6283,6 +6289,7 @@
         vpPhoto.style.backgroundImage = imageSource ? `url("${String(imageSource).replace(/"/g, '%22')}")` : '';
         editorPhotoSources.set(vpPhoto, imageSource);
       }
+      vpPhoto.title = `Vice President · ${party.runningMate}`;
       setTextIfChanged(vpPhoto.querySelector('span'), initials(party.runningMate || 'VP'));
     }
     setTextIfChanged(editorCard.querySelector('.vp-image-status'), party.runningMateImageStatus || (party.runningMateImage ? 'VP picture ready' : 'Type running mate for picture'));
