@@ -2076,7 +2076,11 @@
       ].join('');
       row.innerHTML = `
         <input type="color" value="${p.color}" data-field="color" title="Party / Caucus Brand Color" />
-        <input type="text" value="${p.name}" data-field="name" placeholder="Party name" />
+        <div style="display:flex;align-items:center;gap:4px;min-width:0">
+          <input type="text" value="${p.name}" data-field="name" placeholder="Party name" style="min-width:0;flex:1" />
+          <button type="button" data-move="-1" title="Move party up" aria-label="Move party up" style="flex:none;padding:4px 6px">↑</button>
+          <button type="button" data-move="1" title="Move party down" aria-label="Move party down" style="flex:none;padding:4px 6px">↓</button>
+        </div>
         <select data-field="parentId" title="Caucus linkage / Parent party">${parentOptions}</select>
         <input type="number" value="${p.seats}" data-field="seats" min="1" />
         <select data-field="westminsterRole" title="Westminster bank / seat location">${roleOptions}</select>
@@ -2085,6 +2089,25 @@
         parties = parties.filter(x=>x.id!==p.id); renderEditorRows();
       });
       c.appendChild(row);
+      row.querySelectorAll('[data-move]').forEach(button => {
+        button.addEventListener('click', () => {
+          const direction = Number(button.dataset.move);
+          const sibling = direction < 0 ? row.previousElementSibling : row.nextElementSibling;
+          if (!sibling?.classList.contains('editor-row')) return;
+          if (direction < 0) c.insertBefore(row, sibling);
+          else c.insertBefore(sibling, row);
+          updatePartyMoveButtons();
+          button.focus();
+        });
+      });
+    });
+    updatePartyMoveButtons();
+  }
+  function updatePartyMoveButtons() {
+    const rows = [...document.querySelectorAll('#editor-rows .editor-row')];
+    rows.forEach((row, index) => {
+      row.querySelector('[data-move="-1"]').disabled = index === 0;
+      row.querySelector('[data-move="1"]').disabled = index === rows.length - 1;
     });
   }
   function readEditorValues() {
