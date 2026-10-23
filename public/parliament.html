@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Parliament — Vote Simulator</title>
   <link rel="stylesheet" id="theme-css" href="parliament-new.css?v=20260904-vp-layout-fix" />
+  <link rel="stylesheet" href="parliament-layout.css?v=20261011-compact3" />
+  <link rel="stylesheet" href="catalonia-ui.css?v=20261011-count9" />
   <style>
     .style-switcher {
       position: fixed; bottom: 20px; right: 20px; z-index: 10000;
@@ -1539,6 +1541,7 @@
     }
     .theme-btn:hover { background: var(--faint); color: var(--text); }
   </style>
+  <link rel="stylesheet" href="us-proportional.css?v=20261019-senate150-header11" />
 </head>
 <body>
 
@@ -1586,10 +1589,11 @@
       <div id="editor-rows"></div>
       <div class="editor-actions">
         <button class="add-btn" id="add-party-btn">+ Add party</button>
+        <button class="add-btn" id="export-native-parties-btn">↓ Export parties for native app</button>
         <button class="add-btn apply" id="apply-btn">↺ Apply changes</button>
         <button class="add-btn danger" id="clear-parties-btn">✕ Clear all parties</button>
       </div>
-      <span class="editor-note">Total seats are calculated automatically from the sum of all parties.</span>
+      <span class="editor-note">Total seats are calculated automatically from the sum of all parties and caucuses. Parent parties may have 0 seats when their seats belong to caucuses. + Caucus creates a linked entry without adding seats; assign its seats explicitly to avoid double-counting. Apply edits before exporting. In Parliament Native, choose Backup → Import party composition from HTML.</span>
     </div>
   </div>
 
@@ -1623,6 +1627,7 @@
     <button class="view-btn" id="view-coalition">◆ Coalition making</button>
     <button class="view-btn" id="view-analysis">◇ Analysis suite</button>
     <button class="view-btn" id="view-uselection">▣ US Elections</button>
+    <button class="view-btn" id="view-catalonia">▣ Catalunya Elections</button>
   </div>
 
   <!-- Vote mode & quorum -->
@@ -1934,16 +1939,23 @@
     parties.forEach(p=>{ const e=effectiveSeats(p); yes+=e.yes; no+=e.no; abs+=e.abs; });
     return {yes,no,abs};
   }
+  // Zero-seat records are branding/linkage metadata, not parliamentary actors.
+  function seatedParties() {
+    return parties.filter(p => Number(p.seats) > 0);
+  }
   function coalitionIds() {
+    const parties = seatedParties();
     const valid = new Set(parties.map(p=>p.id));
     return (coalitionData.partyIds || []).filter(id => valid.has(id));
   }
   function externalSupportIds() {
+    const parties = seatedParties();
     const valid = new Set(parties.map(p=>p.id));
     const gov = new Set(coalitionIds());
     return (coalitionData.supportIds || []).filter(id => valid.has(id) && !gov.has(id));
   }
   function passiveIds() {
+    const parties = seatedParties();
     const valid = new Set(parties.map(p=>p.id));
     const gov = new Set(coalitionIds());
     const support = new Set(externalSupportIds());
@@ -1957,6 +1969,7 @@
     return parties.reduce((sum,p) => sum + (set.has(p.id) ? p.seats : 0), 0);
   }
   function coalitionGroups() {
+    const parties = seatedParties();
     const govIds = new Set(coalitionIds());
     const supportIds = new Set(externalSupportIds());
     const passiveSet = new Set(passiveIds());
@@ -2078,13 +2091,29 @@
         <input type="color" value="${p.color}" data-field="color" title="Party / Caucus Brand Color" />
         <div style="display:flex;align-items:center;gap:4px;min-width:0">
           <input type="text" value="${p.name}" data-field="name" placeholder="Party name" style="min-width:0;flex:1" />
+          <button type="button" data-add-caucus title="Add a caucus of this party" style="flex:none;padding:4px 6px;font-size:10px">+ Caucus</button>
           <button type="button" data-move="-1" title="Move party up" aria-label="Move party up" style="flex:none;padding:4px 6px">↑</button>
           <button type="button" data-move="1" title="Move party down" aria-label="Move party down" style="flex:none;padding:4px 6px">↓</button>
         </div>
         <select data-field="parentId" title="Caucus linkage / Parent party">${parentOptions}</select>
-        <input type="number" value="${p.seats}" data-field="seats" min="1" />
+        <input type="number" value="${p.seats}" data-field="seats" min="0" step="1" />
         <select data-field="westminsterRole" title="Westminster bank / seat location">${roleOptions}</select>
         <button class="del-btn">×</button>`;
+      row.querySelector('[data-add-caucus]').addEventListener('click', () => {
+        parties = readEditorValues();
+        const parent = parties.find(other => other.id === p.id);
+        if (!parent) return;
+        const caucus = {
+          id:'p'+(idCounter++), name:parent.name+' caucus', seats:0,
+          color:parent.color, parentId:parent.id,
+          westminsterRole:parent.westminsterRole || 'auto', ideology:parent.ideology,
+        };
+        parties.splice(parties.indexOf(parent) + 1, 0, caucus);
+        renderEditorRows();
+        const added = [...c.querySelectorAll('.editor-row')].find(item => item.dataset.id === caucus.id);
+        added?.querySelector('[data-field="name"]')?.focus();
+        added?.querySelector('[data-field="name"]')?.select();
+      });
       row.querySelector('.del-btn').addEventListener('click', () => {
         parties = parties.filter(x=>x.id!==p.id); renderEditorRows();
       });
@@ -2119,7 +2148,7 @@
         color: row.querySelector('[data-field="color"]').value,
         name:  row.querySelector('[data-field="name"]').value.trim() || 'Unnamed',
         parentId: row.querySelector('[data-field="parentId"]')?.value || '',
-        seats: Math.max(1, parseInt(row.querySelector('[data-field="seats"]').value)||1),
+        seats: Math.max(0, parseInt(row.querySelector('[data-field="seats"]').value, 10)||0),
         westminsterRole: row.querySelector('[data-field="westminsterRole"]')?.value || 'auto',
         ideology: existing?.ideology,
       };
@@ -2280,6 +2309,7 @@
     const list = document.getElementById('party-list');
     list.innerHTML = '';
     const addRow = (p) => {
+      if (!(Number(p.seats) > 0)) return;
       const v = getVote(p);
       const row = document.createElement('div');
       row.className='party-row'; row.id='prow-'+p.id;
@@ -2476,12 +2506,14 @@
      COALITION MAKING
   ═══════════════════════════════════════════════ */
   function coalitionDefaultName(ids=coalitionIds()) {
+    const parties = seatedParties();
     if (!ids.length) return '';
-    const selected = parties.filter(p => ids.includes(p.id));
+    const selected = parties.filter(p => Number(p.seats) > 0 && ids.includes(p.id));
     if (selected.length <= 2) return selected.map(p=>p.name).join(' + ');
     return selected.slice(0,2).map(p=>p.name).join(' + ') + ' +' + (selected.length - 2);
   }
   function renderCoalitionBuilder() {
+    const parties = seatedParties();
     syncCoalitionAfterPartyChange();
     const ids = coalitionIds();
     let supportIds = externalSupportIds();
@@ -2516,7 +2548,7 @@
     progress.classList.toggle('coalition-progress-ready', strength.key === 'ready');
     progress.classList.toggle('coalition-progress-passive', strength.key === 'passive');
     progress.classList.toggle('coalition-progress-super', strength.key === 'super');
-    const selectedParties = parties.filter(p => selected.has(p.id) || supporting.has(p.id) || passive.has(p.id));
+    const selectedParties = parties.filter(p => Number(p.seats) > 0 && selected.has(p.id) || supporting.has(p.id) || passive.has(p.id));
     fill.innerHTML = selectedParties.map(p => {
       const pct = displayedSeats ? (p.seats / displayedSeats * 100).toFixed(3) : 0;
       const role = supporting.has(p.id) ? 'support' : passive.has(p.id) ? 'passive' : 'cabinet';
@@ -2643,9 +2675,10 @@
     renderSavedCoalitions();
   }
   function renderCoalitionInsight(selected, supporting, passive, seats, majority, cabinetSeats, supportSeats, passiveSeats) {
+    const parties = seatedParties();
     const insight = document.getElementById('coalition-insight');
     insight.className = 'coalition-insight';
-    const opposition = parties.filter(p => !selected.has(p.id) && !supporting.has(p.id) && !passive.has(p.id));
+    const opposition = parties.filter(p => Number(p.seats) > 0 && !selected.has(p.id) && !supporting.has(p.id) && !passive.has(p.id));
     if (!parties.length) {
       insight.innerHTML = '<strong>No chamber configured</strong>';
       return;
@@ -2666,7 +2699,7 @@
     if (seats >= majority) {
       insight.className = 'coalition-insight working';
       const cushion = seats - strength.threshold;
-      const smallest = parties.filter(p => selected.has(p.id)).sort((a,b)=>a.seats-b.seats)[0];
+      const smallest = parties.filter(p => Number(p.seats) > 0 && selected.has(p.id)).sort((a,b)=>a.seats-b.seats)[0];
       insight.innerHTML = `
         <strong>Working ${strength.key === 'super' ? 'supermajority' : 'majority'}</strong>
         <span class="coalition-insight-pill metric">+${cushion} ${strength.key === 'super' ? 'over 2/3' : 'cushion'}</span>
@@ -2676,7 +2709,7 @@
       return;
     }
     const shortBy = majority - seats;
-    const selectedParties = parties.filter(p => selected.has(p.id) || supporting.has(p.id));
+    const selectedParties = parties.filter(p => Number(p.seats) > 0 && selected.has(p.id) || supporting.has(p.id));
     const center = selectedParties.reduce((sum,p)=>sum + partyIdeologyScore(p) * p.seats, 0) / Math.max(1, seats);
     const paths = findPartnerPaths(opposition, shortBy, center);
     insight.innerHTML = `
@@ -2728,6 +2761,7 @@
     return { compatible, fewest };
   }
   function renderCoalitionSummary() {
+    const parties = seatedParties();
     const summary = document.getElementById('coalition-summary');
     const ids = coalitionIds();
     const supportIds = externalSupportIds();
@@ -2737,9 +2771,9 @@
       summary.innerHTML = '';
       return;
     }
-    const selected = parties.filter(p => ids.includes(p.id));
-    const supporters = parties.filter(p => supportIds.includes(p.id));
-    const passiveParties = parties.filter(p => passiveListIds.includes(p.id));
+    const selected = parties.filter(p => Number(p.seats) > 0 && ids.includes(p.id));
+    const supporters = parties.filter(p => Number(p.seats) > 0 && supportIds.includes(p.id));
+    const passiveParties = parties.filter(p => Number(p.seats) > 0 && passiveListIds.includes(p.id));
     const cabinetSeats = coalitionSeats(ids);
     const supportSeats = coalitionSeats(supportIds);
     const passiveSeats = coalitionSeats(passiveListIds);
@@ -2903,9 +2937,9 @@
       partyIds: ids,
       supportIds,
       passiveIds: passiveListIds,
-      partyNames: parties.filter(p => ids.includes(p.id)).map(p => p.name),
-      supportNames: parties.filter(p => supportIds.includes(p.id)).map(p => p.name),
-      passiveNames: parties.filter(p => passiveListIds.includes(p.id)).map(p => p.name),
+      partyNames: parties.filter(p => Number(p.seats) > 0 && ids.includes(p.id)).map(p => p.name),
+      supportNames: parties.filter(p => Number(p.seats) > 0 && supportIds.includes(p.id)).map(p => p.name),
+      passiveNames: parties.filter(p => Number(p.seats) > 0 && passiveListIds.includes(p.id)).map(p => p.name),
       seats: coalitionSeats([...ids, ...supportIds]),
       savedAt: Date.now()
     });
@@ -3025,7 +3059,7 @@
       </div>`;
     }).join('')}</div>`;
   }
-  function sourceEntries(list=parties) {
+  function sourceEntries(list=seatedParties()) {
     const total = Math.max(1, partyTotal(list));
     return list.map((p, index) => ({
       id: p.id || `snap-${index}`,
@@ -3116,7 +3150,7 @@
   function savePollSnapshots(list) {
     try { localStorage.setItem(LS_POLL_SNAPSHOTS, JSON.stringify(list.slice(0, 32))); } catch(e) {}
   }
-  function capturePollSnapshot(name='Current chamber', list=parties) {
+  function capturePollSnapshot(name='Current chamber', list=seatedParties()) {
     const snapshot = {
       name: name || 'Current chamber',
       savedAt: Date.now(),
@@ -3150,6 +3184,7 @@
     })).sort((a,b)=>b.seats-a.seats);
   }
   function greedyMajorityIds() {
+    const parties = seatedParties();
     const total = partyTotal();
     const majority = governingMajority(total);
     let seats = 0;
@@ -3163,6 +3198,7 @@
     return ids;
   }
   function idsToParties(ids) {
+    const parties = seatedParties();
     const set = new Set(ids);
     return parties.filter(p => set.has(p.id));
   }
@@ -3283,6 +3319,7 @@
     `;
   }
   function renderScenarioMode() {
+    const parties = seatedParties();
     if (!analysisScenarioTarget || !parties.some(p=>p.id===analysisScenarioTarget)) analysisScenarioTarget = parties[0]?.id || '';
     const result = distributeSeatDelta(parties, analysisScenarioTarget, analysisScenarioDelta);
     const options = parties.map(p => `<option value="${wikiEscape(p.id)}" ${p.id===analysisScenarioTarget?'selected':''}>${wikiEscape(p.name)}</option>`).join('');
@@ -3398,6 +3435,7 @@
     `;
   }
   function renderBlocMode() {
+    const parties = seatedParties();
     const total = partyTotal();
     const groups = new Map();
     parties.forEach(p => {
@@ -3549,6 +3587,7 @@
     `;
   }
   function renderWhipMode() {
+    const parties = seatedParties();
     const total = partyTotal();
     const discipline = Math.max(0, Math.min(100, Number(analysisWhipDiscipline) || 0));
     let yes=0, no=0, abs=0;
@@ -3615,6 +3654,7 @@
     return `${label} ${pad}`;
   }
   function getElectionNightSchedule() {
+    const parties = seatedParties();
     const key = parties.map(p => `${p.id}:${p.name}:${Number(p.seats) || 0}:${p.color || ''}`).join('|');
     if (key === analysisNightScheduleKey) return analysisNightSchedule;
     const entries = [];
@@ -3649,6 +3689,7 @@
     return analysisNightSchedule;
   }
   function electionNightModel(progress=analysisNightProgress) {
+    const parties = seatedParties();
     const total = Math.max(1, partyTotal());
     const rawProgress = clampNumber(progress, 0, 100);
     const reportingStep = Math.round(rawProgress);
@@ -4020,7 +4061,7 @@
     return `
       <div class="night-stage" id="night-stage">
         <div class="night-header">
-          <div class="night-brand"><span class="night-network">Desk</span><span>Election Night</span></div>
+          <div class="night-brand"><span class="night-network">Results desk</span><span>Election Night</span></div>
           <div class="night-live">Live</div>
           <div class="night-clock"><span data-night-progress>${model.reportingStep}%</span> reporting</div>
         </div>
@@ -4089,6 +4130,7 @@
     `;
   }
   function renderCompareMode() {
+    const parties = seatedParties();
     if (!analysisBaseline) analysisBaseline = currentSnapshot('Baseline');
     const base = new Map(analysisBaseline.parties.map(p => [analysisKey(p.name), p]));
     const rows = parties.map(p => {
@@ -4643,6 +4685,7 @@
     return 'opposition';
   }
   function westminsterGroups() {
+    const parties = seatedParties();
     const top = [...parties].sort((a,b)=>b.seats-a.seats)[0];
     const groups = { government:[], opposition:[], crossbench:[], speaker:[] };
     parties.forEach(p => {
@@ -5073,6 +5116,7 @@
 
     // ── Per-party rows ──
     parties.forEach(p => {
+      if (!(Number(p.seats) > 0)) return;
       const e = effectiveSeats(p);
       const row = document.createElement('div'); row.className='bar-row';
       const yesPct =(e.yes /total*100).toFixed(1);
@@ -5175,6 +5219,7 @@
     else if (viewMode==='analysis') renderAnalysisSuite();
     else                         renderCoalitionBuilder();
   }
+
   function updateHeader() {
     const {total,majority}=recalc();
     const modeStr = voteMode==='constitutional' ? ' · 2/3 supermajority' : ' · simple majority';
@@ -6232,18 +6277,49 @@
     setTimeout(()=>dot.classList.remove('flash'), 900);
   }
 
-  function autoSave() {
+  // A portable composition uses the live, applied parties, including caucuses.
+  function exportNativePartyComposition() {
+    const payload = {
+      format: 'parliament-party-composition', version: 1,
+      exportedAt: new Date().toISOString(),
+      totalSeats: parties.reduce((sum, p) => sum + p.seats, 0),
+      parties: JSON.parse(JSON.stringify(parties))
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {type: 'application/json'});
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url; link.download = 'Parliament Party Composition.json';
+    document.body.appendChild(link); link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  document.getElementById('export-native-parties-btn').addEventListener('click', exportNativePartyComposition);
+
+  let autoSaveTimer = 0;
+  function flushAutoSave() {
+    clearTimeout(autoSaveTimer);
+    autoSaveTimer = 0;
     try {
-      localStorage.setItem(LS_AUTO, JSON.stringify({
+      const next = JSON.stringify({
         parties, votes, voteMode, quorumPct, coalitionData,
         parliamentLayout, parliamentColorMode,
         analysisBaseline,
         motionData: motionData||{},
         idCounter
-      }));
-      flashAutosave();
+      });
+      if (localStorage.getItem(LS_AUTO) !== next) {
+        localStorage.setItem(LS_AUTO, next);
+        flashAutosave();
+      }
     } catch(e) {}
   }
+
+  function autoSave() {
+    if (!autoSaveTimer) autoSaveTimer = setTimeout(flushAutoSave, 500);
+  }
+  window.addEventListener('pagehide', flushAutoSave);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) flushAutoSave();
+  });
 
   function loadAutoSave() {
     try {
@@ -6288,11 +6364,58 @@
   }
 
   /* ── Presets ── */
+  const USA_FAC_PRESET = {
+    name: 'USA-FAC',
+    parties: [
+      ['Democrat (FDR Caucus)', '#948BF8'],
+      ['Democrat (DSA Associates)', '#E39697'],
+      ['Democrat (Progressives United)', '#6F8BC4'],
+      ['Democrat (Blue Dogs)', '#BFCEF3'],
+      ['Democrat (Liberal Caucus)', '#ACB6E1'],
+      ['Republican (Tea Party)', '#A23123'],
+      ['Republican (Governants Caucus)', '#EF8B80'],
+      ['Republican (America Group)', '#C2473A'],
+      ['Republican (Sovereign Caucus)', '#7B261B'],
+      ['Republican (Liberty Group)', '#F2D87F'],
+    ].map(([name, color], i) => ({ id:'p' + (i + 1), name, color, seats:10 })),
+  };
   function getPresets() {
-    try { return JSON.parse(localStorage.getItem(LS_PRESETS)||'[]'); } catch(e) { return []; }
+    try {
+      const stored = JSON.parse(localStorage.getItem(LS_PRESETS) || '[]');
+      const list = Array.isArray(stored) ? stored : [];
+      if (!localStorage.getItem('parliament_preset_usa_fac_seeded')) {
+        if (!list.some(preset => preset.name === USA_FAC_PRESET.name)) {
+          list.push(JSON.parse(JSON.stringify(USA_FAC_PRESET)));
+        }
+        if (savePresets(list)) localStorage.setItem('parliament_preset_usa_fac_seeded', '1');
+      }
+      return list;
+    } catch(e) { return []; }
   }
   function savePresets(list) {
-    try { localStorage.setItem(LS_PRESETS, JSON.stringify(list)); } catch(e) {}
+    try {
+      if (!Array.isArray(list)) throw new Error('Invalid preset list.');
+      const previous = localStorage.getItem(LS_PRESETS);
+      const next = JSON.stringify(list);
+      if (previous) {
+        // Never replace unreadable saved presets with a new, empty-derived list.
+        if (!Array.isArray(JSON.parse(previous))) throw new Error('Existing preset data is unreadable.');
+        if (previous !== next) {
+          let history = [];
+          try { history = JSON.parse(localStorage.getItem('parliament_presets_history') || '[]'); } catch(e) {}
+          if (!Array.isArray(history)) history = [];
+          if (history[0]?.data !== previous) history.unshift({savedAt:Date.now(),data:previous});
+          // A failed backup prevents the update, preserving the original list.
+          localStorage.setItem('parliament_presets_history', JSON.stringify(history.slice(0, 10)));
+        }
+      }
+      localStorage.setItem(LS_PRESETS, next);
+      return true;
+    } catch(e) {
+      console.error('Preset save stopped; existing data preserved:', e);
+      alert('Could not save presets. Existing presets were preserved. ' + e.message);
+      return false;
+    }
   }
   function renderPresetList() {
     const list = document.getElementById('preset-list');
@@ -6319,7 +6442,7 @@
         fullRefresh(); autoSave();
       });
       el.querySelector('.persist-del-btn').addEventListener('click', () => {
-        const arr = getPresets(); arr.splice(idx,1); savePresets(arr); renderPresetList();
+        const arr = getPresets(); arr.splice(idx,1); if (savePresets(arr)) renderPresetList();
       });
       list.appendChild(el);
     });
@@ -6330,7 +6453,7 @@
     if (!parties.length) return;
     const arr = getPresets();
     arr.unshift({ name, parties: parties.map(p=>({...p})), savedAt: Date.now() });
-    savePresets(arr);
+    if (!savePresets(arr)) return;
     document.getElementById('preset-name-input').value = '';
     renderPresetList();
   });
@@ -6419,7 +6542,8 @@
   <script src="us-map-data.js"></script>
   <script src="us-election-baseline.js"></script>
   <script src="us-house-map-data.js?v=20260722-highres1"></script>
-  <script src="us-elections.js?v=20260904-vp-layout-fix"></script>
+  <script src="us-elections.js?v=20261019-senate150-header11"></script>
+  <script src="catalonia-embed.js?v=20261015-calls12"></script>
   <div class="style-switcher" id="style-switcher">
     <button class="style-sw-btn" id="sw-classic" onclick="switchStyle('parliament.css', this)">Classic</button>
     <div class="style-sw-sep"></div>

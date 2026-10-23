@@ -2,12 +2,14 @@
   'use strict';
 
   const LS_KEY = 'us_election_lab_simple_v2';
+  const REPORTING_KEY = LS_KEY + '_reporting';
   const CUSTOM_HOUSE_MAPS_KEY = 'us_election_custom_house_maps_v2';
   const CUSTOM_MAP_DB = 'us_election_assets_v1';
   const CUSTOM_MAP_STORE = 'houseMaps';
   const TOTAL_POPULAR_VOTES = 158000000;
   const HOUSE_SEATS = 435;
   const SENATE_SEATS = 100;
+  const PROPORTIONAL_SENATE_SEATS = 150;
   const STRONGHOLD_BOOST = 7;
   const SVG_NS = 'http://www.w3.org/2000/svg';
   const SMALL_STATE_INSET = ['NH', 'VT', 'CT', 'NJ', 'MA', 'DE', 'RI', 'MD', 'DC'];
@@ -255,6 +257,11 @@
       chamberView: 'bloc',
       mapView: 'bloc',
       electoralModel: 'us',
+      electionCycle: 'general',
+      proportionalMode: false,
+      proportionalMethod: 'sainte',
+      proportionalThreshold: 3,
+      proportionalThresholdMode: '3',
     },
     government: {
       open: true,
@@ -379,6 +386,7 @@
   let saveTimer = 0;
   let pendingGovernmentAnimation = null;
   let houseMapImportState = 'VA';
+  let customHouseMapsReady = Promise.resolve();
   let houseMapImportStatus = '';
   let houseMapImportError = false;
   let customHouseMapDbPromise = null;
@@ -398,6 +406,11 @@
   let mapCameraFrame = 0;
   let wheelMapAnchor = null;
   let wheelMapAnchorTimer = 0;
+  let wheelMapZoomTarget = null;
+  let wheelMapFrameTime = 0;
+  const motionGeometryCache = new WeakMap();
+  let motionGeometryNodes = [];
+  let mapMotionScale = 1;
   let governmentFormationInitialized = false;
   let lastGovernmentFormationKey = '';
   const animatedWinnerBadges = new Set();
@@ -443,6 +456,14 @@
     out.settings.chamberView = out.settings.chamberView === 'party' ? 'party' : 'bloc';
     out.settings.mapView = out.settings.mapView === 'party' ? 'party' : 'bloc';
     out.settings.electoralModel = out.settings.electoralModel === 'ideological' ? 'ideological' : 'us';
+    out.settings.electionCycle = out.settings.electionCycle === 'midterms' ? 'midterms' : 'general';
+    out.settings.proportionalMode = out.settings.proportionalMode === true;
+    out.settings.proportionalMethod = out.settings.proportionalMethod === 'dhondt' ? 'dhondt' : 'sainte';
+    out.settings.proportionalThreshold = clamp(out.settings.proportionalThreshold,0,100,3);
+    out.settings.proportionalThresholdMode = out.settings.proportionalThresholdMode==='custom'?'custom':[0,3,5].includes(out.settings.proportionalThreshold)?String(out.settings.proportionalThreshold):'custom';
+    out.settings.investitureRound = out.settings.investitureRound === 2 ? 2 : 1;
+    if(out.settings.proportionalMode && out.electionMode==='president')out.electionMode='house';
+    if (out.settings.electionCycle === 'midterms' && out.electionMode === 'president') out.electionMode = 'senate';
     out.settings.seed = Math.round(Number(out.settings.seed) || 2028);
     if (savedVersion < 4) {
       const legacyBlocs = new Set(['Democratic','Republican','Independent','Progressive','Libertarian']);
@@ -511,7 +532,27 @@
     const mode = typeof bloc === 'object' && String(bloc.mode || bloc.kind || '').toLowerCase() === 'coalition'
       ? 'coalition'
       : 'electoral';
-    return { name, short, color, mode };
+    return { name, short, color, mode,
+      presidentPartyId:String(bloc?.presidentPartyId || ''),
+      vicePresidentPartyId:String(bloc?.vicePresidentPartyId || '') };
+  }
+
+  function presidentialTicket(party) {
+    const bloc = party?.bloc ? findBloc(party.bloc) : null;
+    if (!bloc || bloc.mode !== 'electoral' || !app.settings.coalitionMode) return party;
+    const members = blocParties(bloc.name);
+    const president = members.find(member => member.id === bloc.presidentPartyId) || party;
+    const vice = members.find(member => member.id === bloc.vicePresidentPartyId);
+    return { ...president,
+      runningMate:vice ? (vice.candidate || vice.party) : president.runningMate,
+      runningMateImage:vice ? vice.image : president.runningMateImage };
+  }
+
+  function ticketViceParty(president) {
+    const bloc = president?.bloc ? findBloc(president.bloc) : null;
+    const vice = bloc?.mode === 'electoral' && app.settings.coalitionMode
+      ? blocParties(bloc.name).find(member => member.id === bloc.vicePresidentPartyId) : null;
+    return vice ? { ...vice, runningMate:vice.candidate || vice.party, runningMateImage:vice.image } : presidentialTicket(president);
   }
 
   function findBlocInList(blocs, name) {
@@ -592,14 +633,56 @@
   function loadState() {
     try {
       const saved = localStorage.getItem(LS_KEY);
-      if (saved) return normalizeState(JSON.parse(saved));
+      if (saved) {
+        const state = normalizeState(JSON.parse(saved));
+        // Legacy saves keep reporting in settings; newer saves checkpoint it separately.
+        const reporting = localStorage.getItem(REPORTING_KEY);
+        if (reporting !== null && Number.isFinite(Number(reporting))) {
+          state.settings.reporting = clamp(Number(reporting), 0, 100);
+        }
+        return state;
+      }
     } catch (e) {}
     return normalizeState(clone(DEFAULT_STATE));
   }
 
-  function saveState() {
-    try { localStorage.setItem(LS_KEY, JSON.stringify(app)); } catch (e) {}
+  let persistenceTimer = 0;
+  let lastSavedContent = null;
+
+  function flushSavedState() {
+    clearTimeout(persistenceTimer);
+    persistenceTimer = 0;
+    clearTimeout(saveTimer);
+    saveTimer = 0;
+    try {
+      // Reporting changes every second. Do not rewrite portraits, custom maps,
+      // parties and scenarios for each tick of the counter.
+      const content = JSON.stringify({
+        ...app, settings: { ...app.settings, reporting: undefined }
+      });
+      if (content !== lastSavedContent) {
+        // Retain reporting here too so older versions can still read this save.
+        const snapshot = JSON.stringify(app);
+        if (localStorage.getItem(LS_KEY) !== snapshot) localStorage.setItem(LS_KEY, snapshot);
+        lastSavedContent = content;
+      }
+      const reporting = String(app.settings.reporting);
+      if (localStorage.getItem(REPORTING_KEY) !== reporting) {
+        localStorage.setItem(REPORTING_KEY, reporting);
+      }
+    } catch (e) {
+      // Keep content dirty so a later save can retry after a storage failure.
+      lastSavedContent = null;
+      console.warn('Could not save election state:', e);
+    }
   }
+
+  function saveState() {
+    // Coalesce bursts without postponing indefinitely during continuous edits.
+    if (!persistenceTimer) persistenceTimer = setTimeout(flushSavedState, 500);
+  }
+
+  window.addEventListener('pagehide', flushSavedState);
 
   function queueSaveState(delay = 160) {
     if (saveTimer) clearTimeout(saveTimer);
@@ -610,6 +693,9 @@
   }
 
   function invalidateElectionResults() {
+    proportionalPlaybackPlan=null;
+    proportionalMapNodes=null;
+    proportionalPlaybackSeatKey='';
     electionResultRevision += 1;
     electionResultCache.clear();
     governmentElectionSnapshot = null;
@@ -621,6 +707,7 @@
   }
 
   function scheduleElectionCacheWarmup() {
+    if(app.settings.proportionalMode)return;
     if (countTimer || document.hidden || electionWarmupHandle) return;
     const revision = electionResultRevision;
     const pendingModes = ['president','senate','house'].filter(mode => !electionResultCache.has(mode));
@@ -845,7 +932,7 @@
         if (builtInHouseDistrictsByState.has(abbr) && Array.isArray(entry?.districts)) customHouseMaps.set(abbr, entry);
       });
     } catch (e) {}
-    loadCustomHouseMapsFromDb(legacy);
+    customHouseMapsReady = loadCustomHouseMapsFromDb(legacy);
   }
 
   function openCustomMapDb() {
@@ -1014,6 +1101,70 @@
       if (Number.isFinite(value)) return value <= 1 ? value * 100 : value;
     }
     return NaN;
+  }
+
+  // YAPms-layout GeoJSON: encode the displayed inset map in a reversible
+  // Mercator canvas. These coordinates are presentation geometry, not GIS.
+  function housePathGeoJson(path) {
+    if (!/^[MLZ\d.,\s+\-]+$/i.test(path || '')) throw new Error('Unsupported district path; export cancelled.');
+    const rings = [...path.matchAll(/M([^M]+)/gi)].map(match =>
+      [...match[0].matchAll(/[ML](-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/gi)].map(p => [Number(p[1]), Number(p[2])]));
+    const area = ring => ring.reduce((n, p, i) => { const q=ring[(i+1)%ring.length];return n+p[0]*q[1]-q[0]*p[1]; },0)/2;
+    const contains = (ring, p) => {
+      let inside=false;
+      for(let i=0,j=ring.length-1;i<ring.length;j=i++){
+        const a=ring[i],b=ring[j];
+        if((a[1]>p[1])!==(b[1]>p[1])&&p[0]<(b[0]-a[0])*(p[1]-a[1])/(b[1]-a[1])+a[0])inside=!inside;
+      }
+      return inside;
+    };
+    const nodes=rings.filter(r=>r.length>=3&&Math.abs(area(r))>1e-10).map(r=>({ring:r,size:Math.abs(area(r)),parent:null,depth:0})).sort((a,b)=>b.size-a.size);
+    if(!nodes.length)throw new Error('A district has no usable polygons; export cancelled.');
+    nodes.forEach((n,i)=>{
+      const parents=nodes.slice(0,i).filter(p=>contains(p.ring,n.ring[0]));
+      n.parent=parents[parents.length-1]||null;n.depth=n.parent?n.parent.depth+1:0;
+    });
+    const convert=(ring,outer)=>{
+      const coordinates=ring.map(([x,y])=>[(x-480)*.025,Math.atan(Math.sinh((300-y)*.025*Math.PI/180))*180/Math.PI]);
+      if((area(coordinates)>0)!==outer)coordinates.reverse();
+      const a=coordinates[0],b=coordinates[coordinates.length-1];
+      if(a[0]!==b[0]||a[1]!==b[1])coordinates.push([...a]);
+      return coordinates;
+    };
+    const polygons=nodes.filter(n=>n.depth%2===0).map(n=>[convert(n.ring,true),...nodes.filter(h=>h.parent===n&&h.depth%2===1).map(h=>convert(h.ring,false))]);
+    return polygons.length===1?{type:'Polygon',coordinates:polygons[0]}:{type:'MultiPolygon',coordinates:polygons};
+  }
+
+  function combinedHouseGeoJson() {
+    if(!houseDistricts.length)throw new Error('House map data has not loaded yet.');
+    const ids=new Set();
+    const features=houseDistricts.map(d=>{
+      if(ids.has(d.id))throw new Error('Duplicate district ID; export cancelled: '+d.id);
+      ids.add(d.id);
+      return {type:'Feature',id:d.id,properties:{name:d.id,shortName:d.id,longName:`${d.stateName || d.state} · ${d.label || d.id}`,value:1,state:d.state,district:d.district,source:d.custom?'imported':'vanilla'},geometry:housePathGeoJson(d.path)};
+    });
+    return {type:'FeatureCollection',name:'Combined US House map',description:'YAPms presentation layout: fitted imported districts plus vanilla CD119 districts, including insets. Coordinates encode the simulator canvas, not real geographic locations. Import using Mercator with rotate/center disabled; Short Name=name, Long Name=longName, Value=value.',features};
+  }
+
+  async function exportCombinedHouseMap() {
+    try {
+      await customHouseMapsReady;
+      const geojson=combinedHouseGeoJson();
+      const url=URL.createObjectURL(new Blob([JSON.stringify(geojson)],{type:'application/geo+json'}));
+      const link=document.createElement('a');link.href=url;link.download='us-house-combined-yapms.geojson';document.body.appendChild(link);link.click();link.remove();
+      setTimeout(()=>URL.revokeObjectURL(url),30000);
+      houseMapImportStatus=`Exported ${geojson.features.length} districts · YAPms: name / longName / value; Mercator, rotate/center off.`;houseMapImportError=false;
+    } catch(error) {
+      houseMapImportStatus=error?.message||'House map export failed.';houseMapImportError=true;
+    }
+    renderControls();
+  }
+
+  function handleHouseExportShortcut(event) {
+    if(event.repeat||event.defaultPrevented||!(event.metaKey||event.ctrlKey)||!event.shiftKey||event.altKey||event.key.toLowerCase()!=='g')return;
+    if(!document.body.classList.contains('us-election-open')||app.electionMode!=='house')return;
+    if(event.target?.closest?.('input,textarea,select,[contenteditable="true"],[contenteditable=""]'))return;
+    event.preventDefault();exportCombinedHouseMap();
   }
 
   async function importCustomHouseMap(file, abbr) {
@@ -1798,14 +1949,14 @@
     return rows.sort((a, b) => b.pct - a.pct);
   }
 
-  function winnerForShares(shares) {
+  function winnerForShares(shares, presidential = false) {
     if (app.settings.coalitionMode) {
       const contestRows = blocContestRows(shares);
       const lead = contestRows[0];
       const runner = contestRows[1];
       if (lead) {
         return {
-          party: lead?.party || shares[0]?.party,
+          party: presidential ? presidentialTicket(lead?.party || shares[0]?.party) : (lead?.party || shares[0]?.party),
           key: lead?.key || shares[0]?.party.id,
           label: lead?.type === 'bloc' ? (lead?.name || lead?.key || '') : (lead?.party?.short || lead?.party?.party || ''),
           color: lead?.color || lead?.party?.color || '#64748b',
@@ -1877,7 +2028,7 @@
       state,
       shares,
       blocs: blocRows(shares),
-      winner: winnerForShares(shares),
+      winner: winnerForShares(shares, true),
       ev: options.ev || state.ev,
       label: options.label || state.abbr,
       countyReportingPct: countyBased?.reportingPct ?? 0,
@@ -1936,7 +2087,7 @@
     const edit = raceEdit('county', String(profile.id));
     const totalVotes = raceTotalVotes(state, { county:profile, label:county.name });
     const shares = addVoteCounts(applyRaceEdit(raceShares(state, { county:profile, label:county.name }), edit), totalVotes);
-    const result = { county:profile, state, shares, blocs:blocRows(shares), winner:winnerForShares(shares), totalVotes, edited:!!edit };
+    const result = { county:profile, state, shares, blocs:blocRows(shares), winner:winnerForShares(shares, true), totalVotes, edited:!!edit };
     result.callThreshold = callThresholdForCounty(profile, state, result);
     result.called = app.settings.reporting >= result.callThreshold;
     return result;
@@ -2061,17 +2212,19 @@
   function calculateElectionMode(mode) {
     const normalizedMode = mode === 'house' || mode === 'senate' ? mode : 'president';
     const cached = electionResultCache.get(normalizedMode);
-    if (cached?.revision === electionResultRevision) return cached.result;
+    if (cached?.revision === electionResultRevision && (!app.settings.proportionalMode || cached.reporting===app.settings.reporting)) return cached.result;
     const result = normalizedMode === 'house'
       ? calculateHouseElection()
       : normalizedMode === 'senate'
       ? calculateSenateElection()
       : calculatePresidentElection();
-    electionResultCache.set(normalizedMode, { revision:electionResultRevision, result });
+    electionResultCache.set(normalizedMode, { revision:electionResultRevision, reporting:app.settings.reporting, result });
     return result;
   }
 
   function calculateElection() {
+    if(app.settings.proportionalMode && app.electionMode==='president')app.electionMode='house';
+    if (app.settings.electionCycle === 'midterms' && app.electionMode === 'president') app.electionMode = 'senate';
     return calculateElectionMode(app.electionMode);
   }
 
@@ -2123,6 +2276,7 @@
       ...row,
       popularPct: row.popularWeight / Math.max(1, totalWeight) * 100,
       popularVotes: row.popularWeight / Math.max(1, totalWeight) * TOTAL_POPULAR_VOTES,
+      party: presidentialTicket(row.party)?.id === row.party.id ? presidentialTicket(row.party) : row.party,
     })).sort((a, b) => b.ev - a.ev || b.popularPct - a.popularPct);
 
     return {
@@ -2141,7 +2295,153 @@
     };
   }
 
+  // Standard Sainte-Laguë (1,3,5,...). Stable input order breaks exact ties.
+  // Census 2020 apportionment population, Table 1 (includes allocated overseas).
+  // https://www2.census.gov/programs-surveys/decennial/2020/data/apportionment/apportionment-2020-table01.pdf
+  const PROPORTIONAL_POPULATION={
+    AL:5030053,AK:736081,AZ:7158923,AR:3013756,CA:39576757,CO:5782171,CT:3608298,DE:990837,
+    FL:21570527,GA:10725274,HI:1460137,ID:1841377,IL:12822739,IN:6790280,IA:3192406,KS:2940865,
+    KY:4509342,LA:4661468,ME:1363582,MD:6185278,MA:7033469,MI:10084442,MN:5709752,MS:2963914,
+    MO:6160281,MT:1085407,NE:1963333,NV:3108462,NH:1379089,NJ:9294493,NM:2120220,NY:20215751,
+    NC:10453948,ND:779702,OH:11808848,OK:3963516,OR:4241500,PA:13011844,RI:1098163,SC:5124712,
+    SD:887770,TN:6916897,TX:29183290,UT:3275252,VT:643503,VA:8654542,WA:7715946,WV:1795045,
+    WI:5897473,WY:577719,
+  };
+
+  function divisorSeats(weights, seats, method='sainte') {
+    const counts = weights.map(() => 0);
+    for (let seat=0; seat<seats; seat++) {
+      let best=-1, quotient=0;
+      weights.forEach((weight,i) => {
+        const divisor=method==='dhondt'?counts[i]+1:2*counts[i]+1;
+        const q=Math.max(0,Number(weight)||0)/divisor;
+        if(q>quotient){best=i;quotient=q;}
+      });
+      if(best<0)break;
+      counts[best]++;
+    }
+    return counts;
+  }
+
+  function sainteLagueSeats(weights,seats){return divisorSeats(weights,seats,'sainte');}
+  function proportionalMethod(){return app.settings.proportionalMethod==='dhondt'?'dhondt':'sainte';}
+  function proportionalMethodLabel(){return proportionalMethod()==='dhondt'?'D’Hondt':'Sainte-Laguë';}
+  function proportionalThreshold(){return clamp(app.settings.proportionalThreshold??3,0,100,3);}
+
+  function proportionalSeatAllocation(shares, seats) {
+    const groups=[], byKey=new Map();
+    shares.forEach((share,index)=>{
+      const bloc=share.party.bloc && findBloc(share.party.bloc);
+      const key=app.settings.coalitionMode && bloc?.mode==='electoral' ? 'bloc:'+bloc.name : 'party:'+share.party.id;
+      if(!byKey.has(key)){byKey.set(key,groups.length);groups.push({members:[],weight:0});}
+      const group=groups[byKey.get(key)];group.members.push(index);group.weight+=Math.max(0,share.pct||0);
+    });
+    const total=groups.reduce((n,g)=>n+g.weight,0),threshold=proportionalThreshold();
+    const eligibleWeights=groups.map(g=>g.weight>0 && g.weight+1e-10>=total*threshold/100?g.weight:0);
+    const allocated=divisorSeats(eligibleWeights,seats,proportionalMethod()), counts=shares.map(()=>0);
+    groups.forEach((group,i)=>{
+      const split=divisorSeats(group.members.map(j=>shares[j].pct),allocated[i],proportionalMethod());
+      group.members.forEach((j,k)=>counts[j]=split[k]);
+    });
+    return shares.map((share,i)=>({...share,seats:counts[i]}));
+  }
+
+  // Approximate first poll closures, Eastern time. Multi-zone states begin
+  // with their first regions, not their last. Count speeds below are synthetic.
+  // Source: https://www.ncsl.org/elections-and-campaigns/polling-places
+  const PROPORTIONAL_POLL_CLOSE={
+    IN:18,KY:18,GA:19,SC:19,VT:19,VA:19,FL:19,NH:19,
+    NC:19.5,OH:19.5,WV:19.5,AL:20,CT:20,DE:20,DC:20,IL:20,KS:20,
+    ME:20,MD:20,MA:20,MI:20,MS:20,MO:20,NJ:20,OK:20,PA:20,RI:20,
+    SD:20,TN:20,TX:20,AR:20.5,AZ:21,CO:21,IA:21,LA:21,MN:21,NE:21,
+    NM:21,NY:21,ND:20,WI:21,WY:21,MT:22,NV:22,UT:22,CA:23,ID:22,
+    OR:23,WA:23,HI:24,AK:24,
+  };
+  function proportionalCountProgress(state,clock=app.settings.reporting) {
+    const seed=hashNumber('state-list-count:'+app.settings.seed+':'+state.abbr);
+    const start=((PROPORTIONAL_POLL_CLOSE[state.abbr]||20)-18)*5+seed*1.2;
+    const fast=['IN','KY','FL','VT','VA'].includes(state.abbr);
+    const slow=['CA','WA','OR','AZ','NV','AK'].includes(state.abbr);
+    const end=Math.min(99,start+(fast?42:slow?72:58)+hashNumber('state-list-finish:'+state.abbr)*15);
+    const fraction=clamp((clock-start)/(end-start),0,1);
+    return clock>=100?100:Math.pow(fraction,.9+seed*.2)*100;
+  }
+
+  let proportionalPlaybackPlan=null;
+  let proportionalMapNodes=null;
+  let proportionalPlaybackSeatKey='';
+
+  function prepareProportionalPlayback() {
+    if(proportionalPlaybackPlan)return proportionalPlaybackPlan;
+    const clock=app.settings.reporting;
+    let bases;
+    try{
+      // Final geography is computed once. Playback never recalculates races.
+      app.settings.reporting=100;
+      bases=SENATE_STATE_META.map(state=>stateResult(state));
+    }finally{app.settings.reporting=clock;}
+    const senateDelegations=sainteLagueSeats(SENATE_STATE_META.map(state=>PROPORTIONAL_POPULATION[state.abbr]),PROPORTIONAL_SENATE_SEATS-SENATE_STATE_META.length).map(n=>n+1);
+    const schedules=bases.map(base=>base.shares.map(share=>{
+      const weights=Array.from({length:16},(_,batch)=>{
+        // Early geographic batches may lean noticeably; later batches settle.
+        const amplitude=.32*(1-batch/20);
+        return 1+amplitude*(2*hashNumber('pr-batch:'+app.settings.seed+':'+base.state.abbr+':'+share.party.id+':'+batch)-1);
+      });
+      const total=weights.reduce((a,b)=>a+b,0),prefix=[0];
+      weights.forEach(w=>prefix.push(prefix[prefix.length-1]+w/total));
+      return prefix;
+    }));
+    const finalRows={};
+    for(const mode of ['house','senate'])finalRows[mode]=bases.map((base,index)=>{
+      const ev=mode==='house'?base.state.ev-2:senateDelegations[index];
+      return {...base,kind:'proportional',winner:winnerForShares(base.shares),ev,
+        allocation:proportionalSeatAllocation(base.shares,ev),called:true,countProgress:100,label:base.state.abbr};
+    });
+    const frames={house:[],senate:[]};
+    for(let frame=0;frame<=100;frame++){
+      const counted=bases.map((base,index)=>{
+        const progress=proportionalCountProgress(base.state,frame),position=progress/100*16;
+        const batch=Math.min(15,Math.floor(position)),part=position-batch;
+        const votes=base.shares.map((share,i)=>{
+          const prefix=schedules[index][i];
+          const fraction=progress>=100?1:prefix[batch]+(prefix[batch+1]-prefix[batch])*part;
+          return (base.totalVotes||0)*share.pct/100*fraction;
+        });
+        const total=votes.reduce((a,b)=>a+b,0);
+        const shares=progress>=100?base.shares:base.shares.map((share,i)=>({...share,votes:votes[i],pct:total?votes[i]/total*100:0}));
+        return {progress,votes,total,shares};
+      });
+      for(const mode of ['house','senate']){
+        const totals=new Map(app.parties.map(party=>[party.id,{party,ev:0,states:0,popularVotes:0}]));
+        const rows=finalRows[mode].map((final,index)=>{
+          const count=counted[index],called=count.progress>=100;
+          const revealed=called?final.ev:count.progress>0?Math.min(final.ev,Math.floor(final.ev*Math.pow(count.progress/100,.85)+.35)):0;
+          const allocation=called?final.allocation:proportionalSeatAllocation(count.shares,revealed);
+          count.shares.forEach((share,i)=>{const total=totals.get(share.party.id);if(total)total.popularVotes+=count.votes[i];});
+          allocation.forEach(share=>{const total=totals.get(share.party.id);if(total){total.ev+=share.seats;if(share.seats)total.states++;}});
+          return {...final,allocation,called,unallocated:final.ev-allocation.reduce((n,s)=>n+s.seats,0),countProgress:count.progress,
+            winner:count.total?winnerForShares(count.shares):final.winner,shares:count.shares,totalVotes:count.total};
+        });
+        const totalVotes=counted.reduce((n,c)=>n+c.total,0);
+        const parties=[...totals.values()].map(row=>({...row,popularPct:totalVotes?row.popularVotes/totalVotes*100:0}))
+          .sort((a,b)=>b.ev-a.ev||b.popularPct-a.popularPct);
+        frames[mode].push({mode,proportional:true,projections:rows.some(row=>!row.called),totalUnits:mode==='house'?HOUSE_SEATS:PROPORTIONAL_SENATE_SEATS,
+          majority:mode==='house'?218:Math.floor(PROPORTIONAL_SENATE_SEATS/2)+1,unitLabel:'seats',mapLabel:'State-list '+proportionalMethodLabel(),
+          battleLabel:'State constituencies',parties,stateResults:rows,senateResults:mode==='senate'?rows:[],
+          districtResults:[],unitResults:rows,leader:parties[0],battlegrounds:[],tipping:null});
+      }
+    }
+    proportionalPlaybackPlan={frames};
+    return proportionalPlaybackPlan;
+  }
+
+  function calculateProportionalElection(mode) {
+    const plan=prepareProportionalPlayback();
+    return plan.frames[mode][Math.max(0,Math.min(100,Math.floor(app.settings.reporting)))];
+  }
+
   function calculateHouseElection() {
+    if (app.settings.proportionalMode) return calculateProportionalElection('house');
     const partyTotals = new Map(app.parties.map(party => [party.id, {
       party,
       ev:0,
@@ -2217,6 +2517,7 @@
   }
 
   function calculateSenateElection() {
+    if (app.settings.proportionalMode) return calculateProportionalElection('senate');
     const partyTotals = new Map(app.parties.map(party => [party.id, {
       party,
       ev:0,
@@ -2274,6 +2575,7 @@
   }
 
   function senateVpTieBreakParty(parties) {
+    if (app.settings.electionCycle === 'midterms') return null;
     const calledSeats = parties.reduce((sum, row) => sum + (Number(row.ev) || 0), 0);
     if (calledSeats !== SENATE_SEATS || parties.some(row => (Number(row.ev) || 0) >= 51)) return null;
     const presidentialParty = presidentialWinnerForSenateTie();
@@ -2286,7 +2588,7 @@
     app.settings.reporting = 100;
     const result = calculatePresidentElection();
     app.settings.reporting = originalReporting;
-    return result.parties[0]?.party || null;
+    return ticketViceParty(result.parties[0]?.party) || null;
   }
 
   function calculateGovernmentAssembly(currentResult = null, electionSnapshot = null) {
@@ -2526,7 +2828,7 @@
 
   function governmentViceDecision(president, senate, presidentDecision) {
     if (presidentDecision.type === 'electoral') {
-      const finalists = [presidentDecision.suggested || presidentDecision.party].filter(Boolean);
+      const finalists = [ticketViceParty(presidentDecision.suggested || presidentDecision.party)].filter(Boolean);
       const selected = governmentSelectedParty(app.government.vicePresidentId, finalists);
       return {
         type:'ticket',
@@ -2566,7 +2868,7 @@
   function governmentSelectedParty(id, finalists = []) {
     const party = findParty(id);
     if (!party) return null;
-    return finalists.some(item => item?.id === party.id) ? party : null;
+    return finalists.find(item => item?.id === party.id) || null;
   }
 
   function senateViceBallot(senate, finalists = []) {
@@ -2814,8 +3116,13 @@
             </div>
           </div>
           <button class="election-btn" data-action="mode-president">President</button>
+          <button class="election-btn" data-action="toggle-midterms" aria-pressed="false">Midterms mode</button>
+          <button class="election-btn" data-action="toggle-proportional" aria-pressed="false">Proportional mode</button>
+          <label class="proportional-threshold-control" data-proportional-threshold-control hidden><span>State threshold</span><select data-proportional-threshold-preset aria-label="Statewide electoral threshold"><option value="0">Off</option><option value="3">3%</option><option value="5">5%</option><option value="custom">Custom</option></select><span data-proportional-threshold-custom-wrap hidden><input data-proportional-threshold-custom type="number" min="0" max="100" step="0.1" aria-label="Custom statewide threshold percent">%</span></label>
+          <div class="electoral-model-control proportional-method-control" data-proportional-method-control hidden><span>Seat allocation</span><div class="electoral-model-switch" role="group" aria-label="Party seat allocation method"><button type="button" data-action="set-proportional-method" data-proportional-method="dhondt" title="D’Hondt: divisors 1, 2, 3…">D’Hondt</button><button type="button" data-action="set-proportional-method" data-proportional-method="sainte" title="Sainte-Laguë: divisors 1, 3, 5…">Sainte-Laguë</button></div></div>
           <button class="election-btn" data-action="mode-senate">Senate</button>
           <button class="election-btn" data-action="mode-house">House</button>
+          <button class="election-btn" data-action="export-hemicycle">Send to hemicycle</button>
           <button class="election-btn" data-action="toggle-government-panel">Government</button>
           <button class="election-btn" data-action="map-states">States</button>
           <button class="election-btn" data-action="map-counties">Counties</button>
@@ -2962,6 +3269,7 @@
     scheduleElectionCacheWarmup();
   }
 
+
   function renderCandidates(result) {
     const strip = document.getElementById('candidate-strip');
     if (!strip) return;
@@ -3021,7 +3329,7 @@
     const assignedBloc = party.bloc ? findBloc(party.bloc) : null;
     const cardBlocName = row.blocName || assignedBloc?.name || '';
     const imageStyle = party.image ? `style="background-image:url('${escapeAttr(party.image)}')"` : '';
-    const won = candidateHasWon(row, leaderId, result?.majority);
+    const won = !(result?.proportional && result?.projections) && candidateHasWon(row, leaderId, result?.majority);
     const animateWinnerBadge = won && claimWinnerBadgeAnimation(row);
     const cardColor = row.type === 'bloc'
       ? (row.color || party.color)
@@ -3066,6 +3374,16 @@
     </div>`;
   }
 
+  function candidateTicketPartners(members, ticket, mode) {
+    const normalizedName = value => String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+    const shownNames = new Set([ticket.candidate, mode === 'president' ? ticket.runningMate : '']
+      .map(normalizedName).filter(Boolean));
+    const shownImages = new Set([ticket.image, mode === 'president' ? ticket.runningMateImage : ''].filter(Boolean));
+    return members.filter(({ party }) => party.id !== ticket.id
+      && !shownNames.has(normalizedName(party.candidate))
+      && !(party.image && shownImages.has(party.image)));
+  }
+
   function candidateDisplayRows(result) {
     const byId = new Map((result.parties || []).map(row => [row.party.id, row]));
     const configuredPct = new Map(voteTargets().rows.map(row => [row.party.id, row.pct]));
@@ -3080,8 +3398,10 @@
       const visualMembers = [...members].sort((a, b) => blocVisualMemberSort(a, b, configuredPct, partyOrder, countStarted));
       members.forEach(row => used.add(row.party.id));
       const lead = visualMembers[0];
+      const ticket = result.mode === 'president' ? presidentialTicket(lead.party) : lead.party;
       rows.push({
         ...lead,
+        party:ticket,
         type:'bloc',
         displayId:`bloc:${group.name}`,
         blocName:group.name,
@@ -3089,7 +3409,7 @@
         blocMode:group.mode,
         color:group.color || blocColor(group.name, lead.party.color),
         members:visualMembers,
-        partners:visualMembers.slice(1),
+        partners:candidateTicketPartners(visualMembers, ticket, result.mode),
         ev:members.reduce((sum, row) => sum + row.ev, 0),
         states:members.reduce((sum, row) => sum + row.states, 0),
         popularPct:members.reduce((sum, row) => sum + (countStarted ? row.popularPct : configuredPct.get(row.party.id) || 0), 0),
@@ -3243,8 +3563,8 @@
     if (title) title.textContent = result.vpTieBreakParty
       ? `${vpRow ? displayRowShort(vpRow) : result.vpTieBreakParty.short} controls Senate via VP`
       : leader?.ev >= majority
-      ? `${displayRowShort(leader)} crosses ${majority}`
-      : `${calledEv}/${totalUnits} called · ${Math.max(0, majority - (leader?.ev || 0))} ${unitLabel} to ${majority}`;
+      ? `${displayRowShort(leader)} ${result.proportional&&result.projections?'projected above':'crosses'} ${majority}`
+      : `${calledEv}/${totalUnits} ${result.proportional&&result.projections?'projected':'called'} · ${Math.max(0, majority - (leader?.ev || 0))} ${unitLabel} to ${majority}`;
     const uncalledEv = Math.max(0, totalUnits - calledEv);
     line.innerHTML = `
       <div class="count-majority-marker" style="left:${(majority / totalUnits * 100).toFixed(3)}%"><span>${majority}</span></div>
@@ -3314,13 +3634,13 @@
     });
     while (seats.length < dotCount) seats.push({ color:'#64748b', label:'UNC', title:'Uncalled', uncalled:true });
     const positions = chamberSeatPositions(dotCount);
-    const senateMode = result.totalUnits <= 120;
+    const senateMode = result.mode === 'senate';
     const seatSize = senateMode ? '9px' : 'clamp(3.8px, 0.48vw, 5.5px)';
     card.innerHTML = `
       <div class="chamber-head">
         <div>
           <span class="election-kicker">${result.mode === 'senate' ? 'Senate chamber' : 'House chamber'}</span>
-          <h3>${calledSeats}/${result.totalUnits} ${escapeHtml(result.unitLabel || 'seats')} called</h3>
+          <h3>${calledSeats}/${result.totalUnits} ${escapeHtml(result.unitLabel || 'seats')} ${result.proportional&&result.projections?'projected':'called'}</h3>
         </div>
         <div class="chamber-head-actions">
           <div class="chamber-view-toggle" aria-label="Chamber grouping">
@@ -3347,9 +3667,76 @@
     `;
   }
 
+  function investitureResult(rows, government, round=1) {
+    const yesIds=new Set([...government.cabinetIds,...government.supportIds]);
+    const abstainIds=new Set(government.passiveIds);
+    let yes=0,no=0,abstain=0;
+    rows.forEach(row=>{if(yesIds.has(row.party.id))yes+=row.ev;else if(abstainIds.has(row.party.id))abstain+=row.ev;else no+=row.ev;});
+    return {yes,no,abstain,passed:!!government.presidentId && (round===2?yes>no:yes>=218)};
+  }
+
+  function investitureSignature(house) {
+    return JSON.stringify([house.parties.map(r=>[r.party.id,r.ev]),app.government.presidentId,
+      app.government.cabinetIds,app.government.supportIds,app.government.passiveIds,app.settings.investitureRound||1]);
+  }
+
+  function renderInvestiture(card) {
+    card.hidden=!app.government.open;if(card.hidden)return;
+    const house=calculateElectionMode('house'),senate=calculateElectionMode('senate');
+    const round=app.settings.investitureRound||1,complete=app.settings.reporting>=100;
+    const vote=investitureResult(house.parties,app.government,round);
+    const nominee=findParty(app.government.presidentId);
+    const formed=complete && !!nominee && app.settings.investitureConfirmed===investitureSignature(house);
+    const rulesOpen=card.querySelector('.investiture-explainer')?.open;
+    card.className='government-card investiture-card'+(formed?' formed':'');
+    setStableMarkup(card,`<div class="government-head"><div><span class="election-kicker">Parliamentary government</span><h3>${formed?'Government invested':'House investiture'}</h3><p class="investiture-subtitle">Build a majority in the House to appoint a prime minister.</p></div><span class="investiture-stage ${formed?'success':''}">${formed?'Invested':complete?'Ready for a vote':'Awaiting results'}</span></div>
+      <div class="investiture-rules"><div class="${round===1?'current':''}"><span>First ballot</span><strong>218 <small>yes votes</small></strong><p>Absolute House majority</p></div><div class="${round===2?'current':''}"><span>Second ballot</span><strong>Yes <small>must exceed</small> No</strong><p>Abstentions can make the difference</p></div><div><span>Voting chamber</span><strong>435 <small>House seats</small></strong><p>The 150-seat Senate does not vote</p></div></div>
+      <details class="investiture-explainer" ${rulesOpen?'open':''}><summary>How this mode works</summary><ul><li>House state delegations use the 2020 Census apportionment. Senate states each receive one seat, with 100 additional seats distributed by population.</li><li>${escapeHtml(proportionalMethodLabel())} uses divisors ${proportionalMethod()==='dhondt'?'1, 2, 3…':'1, 3, 5…'} with ${proportionalThreshold()?proportionalThreshold()+'% statewide eligibility':'no legal vote threshold'}. Electoral blocs pool votes, then split seats between members by the same rule.</li><li>States confirm their seats as local counts finish. Government formation unlocks once the full count is complete.</li></ul></details>
+      <div class="investiture-controls"><label>Prime minister nominee<select data-investiture-nominee ${complete?'':'disabled'}><option value="">Choose nominee</option>${app.parties.map(p=>`<option value="${escapeAttr(p.id)}" ${p.id===nominee?.id?'selected':''}>${escapeHtml(p.candidate||p.party)}</option>`).join('')}</select></label><div class="investiture-ballots" role="group" aria-label="Investiture ballot">
+      <button class="election-btn ${round===1?'active':''}" aria-pressed="${round===1}" data-action="investiture-round-1">First ballot</button><button class="election-btn ${round===2?'active':''}" aria-pressed="${round===2}" data-action="investiture-round-2">Second ballot</button></div></div>
+      <div class="government-party-grid investiture-party-grid">${house.parties.filter(r=>r.ev>0).map(row=>{
+        const id=row.party.id,role=app.government.cabinetIds.includes(id)?'cabinet':app.government.supportIds.includes(id)?'support':app.government.passiveIds.includes(id)?'abstain':'opposition';
+        return `<label class="investiture-party-card" data-role="${role}" style="--party:${escapeAttr(row.party.color)}"><span class="investiture-party-heading"><i></i><span>${escapeHtml(row.party.party)}</span><small>${escapeHtml(row.party.short||'')}</small></span><span class="investiture-party-seats"><span><b>${row.ev}</b> House</span><span><b>${senate.parties.find(r=>r.party.id===id)?.ev||0}</b> Senate</span>${complete?'':'<em>Projected</em>'}</span><span class="investiture-role-label">Investiture position</span><select aria-label="${escapeAttr(row.party.party)} investiture position" data-investiture-role="${escapeAttr(id)}" ${complete?'':'disabled'}>${[['cabinet','Cabinet · yes'],['support','External support · yes'],['abstain','Abstain'],['opposition','Opposition · no']].map(([value,label])=>`<option value="${value}" ${role===value?'selected':''}>${label}</option>`).join('')}</select></label>`;
+      }).join('')}</div><div class="investiture-footer"><div class="investiture-tallies"><div class="yes"><strong>${vote.yes}</strong><span>Yes</span></div><div class="no"><strong>${vote.no}</strong><span>No</span></div><div><strong>${vote.abstain}</strong><span>Abstain</span></div></div><div class="investiture-verdict ${complete&&nominee?(vote.passed?'pass':'fail'):''}">${complete?(nominee?(vote.passed?'Majority secured':'More support needed'):'Choose a nominee to continue'):'Counting in progress'}<small>${complete?'Ballot '+round+' · '+(round===1?'218 yes required':'Yes must exceed no'):'Government formation unlocks after the full count'}</small></div>
+      <button class="election-btn primary" data-action="hold-investiture" ${complete&&nominee?'':'disabled'}>Hold investiture vote</button></div>
+      ${app.government.history.filter(h=>h.label.startsWith('Investiture')).slice(0,4).map(h=>`<div class="investiture-history"><span>${escapeHtml(h.label)}</span><b class="${h.passed?'pass':'fail'}">${escapeHtml(h.result)}</b><small>${escapeHtml(h.detail)}</small></div>`).join('')}`);
+  }
+
+  document.addEventListener('change',e=>{
+    if(e.target.matches('[data-proportional-threshold-preset],[data-proportional-threshold-custom]')){
+      if(!app.settings.proportionalMode)return;
+      const target=e.target;
+      const custom=target.matches('[data-proportional-threshold-custom]')||target.value==='custom';
+      const threshold=target.value==='custom'?proportionalThreshold():clamp(target.value,0,100,3);
+      app.settings.proportionalThresholdMode=custom?'custom':String(threshold);
+      if(threshold!==proportionalThreshold()){
+        stopCount();app.settings.proportionalThreshold=threshold;app.settings.investitureConfirmed='';
+        invalidateElectionResults();renderAll();
+      }else renderControls();
+      saveState();return;
+    }
+    if(!app.settings.proportionalMode || !governmentUnlocked())return;
+    const target=e.target;
+    if(target.matches('[data-investiture-nominee]'))app.government.presidentId=findParty(target.value)?.id||'';
+    else if(target.matches('[data-investiture-role]')){
+      const id=target.dataset.investitureRole;if(!findParty(id))return;
+      for(const key of ['cabinetIds','supportIds','passiveIds'])app.government[key]=app.government[key].filter(p=>p!==id);
+      const key={cabinet:'cabinetIds',support:'supportIds',abstain:'passiveIds'}[target.value];
+      if(key)app.government[key].push(id);
+    }else return;
+    app.settings.investitureConfirmed='';renderGovernmentAssembly();saveState();
+  });
+
   function renderGovernmentAssembly(result, options = {}) {
     const card = document.getElementById('government-card');
     if (!card) return;
+    if(app.settings.proportionalMode){renderInvestiture(card);return;}
+    if (app.settings.electionCycle === 'midterms') {
+      card.hidden = true;
+      card.innerHTML = '';
+      stableMarkup.delete(card);
+      return;
+    }
     const locked = app.settings.reporting < 100;
     card.hidden = !app.government.open;
     card.className = `government-card ${locked ? 'locked' : ''}`;
@@ -3815,6 +4202,47 @@
   }
 
   function renderControls() {
+    const midterms = app.settings.electionCycle === 'midterms' && !app.settings.proportionalMode;
+    document.querySelectorAll('[data-action="mode-president"], [data-action="map-states"], [data-action="map-counties"], [data-action="toggle-government-panel"]').forEach(button => {
+      button.style.display = midterms ? 'none' : '';
+    });
+    const cycleButton = document.querySelector('[data-action="toggle-midterms"]');
+    const proportional=!!app.settings.proportionalMode;
+    const thresholdControl=document.querySelector('[data-proportional-threshold-control]');
+    if(thresholdControl){
+      thresholdControl.hidden=!proportional;
+      const mode=app.settings.proportionalThresholdMode||'3';
+      thresholdControl.querySelector('[data-proportional-threshold-preset]').value=mode;
+      thresholdControl.querySelector('[data-proportional-threshold-custom-wrap]').hidden=mode!=='custom';
+      const input=thresholdControl.querySelector('[data-proportional-threshold-custom]');
+      if(document.activeElement!==input)input.value=String(proportionalThreshold());
+    }
+    const methodControl=document.querySelector('[data-proportional-method-control]');
+    if(methodControl)methodControl.hidden=!proportional;
+    document.querySelectorAll('[data-proportional-method]').forEach(button=>{
+      const selected=button.dataset.proportionalMethod===proportionalMethod();
+      button.classList.toggle('active',selected);button.setAttribute('aria-pressed',String(selected));
+    });
+    const proportionalButton=document.querySelector('[data-action="toggle-proportional"]');
+    proportionalButton?.classList.toggle('active',proportional);
+    proportionalButton?.setAttribute('aria-pressed',String(proportional));
+    if(cycleButton)cycleButton.hidden=proportional;
+    for(const action of ['mode-president','map-states','map-counties']){
+      const button=document.querySelector(`[data-action="${action}"]`);
+      if(button && proportional)button.style.display='none';
+    }
+    if (cycleButton) {
+      cycleButton.classList.toggle('active', midterms);
+      cycleButton.setAttribute('aria-pressed', String(midterms));
+      cycleButton.textContent = midterms ? 'Midterms · on' : 'Midterms';
+    }
+    const transferButton = document.querySelector('[data-action="export-hemicycle"]');
+    if (transferButton) {
+      transferButton.style.display = app.electionMode === 'president' ? 'none' : '';
+      transferButton.textContent = (app.electionMode === 'house' ? 'House' : 'Senate') + ' → hemicycle';
+      transferButton.disabled = app.settings.reporting < 100;
+      transferButton.title = app.settings.reporting < 100 ? 'Finish the count before transferring the full chamber' : 'Replace hemicycle parties with this chamber’s completed seat counts';
+    }
     const status = document.getElementById('simulation-status');
     const voteSetup = voteSetupValidation();
     if (status) {
@@ -3863,7 +4291,7 @@
     const resetHouseMap = document.querySelector('[data-action="reset-house-map"]');
     const resetAllHouseMaps = document.querySelector('[data-action="reset-all-house-maps"]');
     const importStatus = document.getElementById('house-map-import-status');
-    if (importTools) importTools.hidden = app.electionMode !== 'house';
+    if (importTools) importTools.hidden = app.electionMode !== 'house' || proportional;
     if (importState) {
       if (!houseMapImportState || !stateByAbbr.has(houseMapImportState)) houseMapImportState = app.selectedState === 'DC' ? 'VA' : app.selectedState;
       importState.value = houseMapImportState;
@@ -3883,8 +4311,8 @@
       const defaultStatus = selectedEntry
         ? `${houseMapImportState} custom map · ${selectedEntry.fileName || 'GeoJSON'}${customHouseMaps.size > 1 ? ` · ${customHouseMaps.size} custom states active` : ''}`
         : `${houseMapImportState} · built-in CD119 map${customHouseMaps.size ? ` · ${customHouseMaps.size} custom ${customHouseMaps.size === 1 ? 'state' : 'states'} active` : ''}`;
-      importStatus.hidden = app.electionMode !== 'house';
-      importStatus.textContent = houseMapImportStatus || defaultStatus;
+      importStatus.hidden = app.electionMode !== 'house' || proportional;
+      importStatus.textContent = houseMapImportStatus || defaultStatus + ' · ⌘/Ctrl+Shift+G: export combined map';
       importStatus.classList.toggle('error', houseMapImportError);
       importStatus.classList.toggle('custom', !!selectedEntry && !houseMapImportError);
     }
@@ -3956,12 +4384,17 @@
   function renderMap(result) {
     const svg = document.getElementById('real-us-map');
     if (!svg || !window.US_ELECTION_MAP_DATA) return;
+    motionGeometryNodes = [];
     svg.innerHTML = '';
     resetSmallStateInset();
     const modeLabel = document.getElementById('map-mode-label');
     const title = document.getElementById('map-title');
     const back = document.querySelector('[data-action="back-states"]');
     refreshMapModeControls();
+    if(result.proportional){
+      renderProportionalMap(svg,result,modeLabel,title,back);
+      finalizeMapCameraLayer(svg);return;
+    }
 
     if (app.electionMode === 'house') {
       renderHouseMap(svg, result, modeLabel, title, back);
@@ -4232,6 +4665,7 @@
       const mapColor = mapDisplayColor(row);
       const fill = row.called ? shadeColor(mapColor, row) : '#64748b';
       const underlayPath = district.custom ? null : appendMapUnderlay(underlay, district.path, fill, row.called);
+      motionGeometryNodes.push({ path, underlayPath, bbox:district.bbox, geometry:district.custom ? districtMotionGeometry(district) : null, detail:'full', visible:true });
       path.style.setProperty('--party', mapColor);
       path.style.fill = fill;
       path.style.fillOpacity = row.called ? '1' : '0.32';
@@ -4252,6 +4686,195 @@
       path.addEventListener('mouseleave', hideTip);
       (customLayers.get(district.state) || svg).appendChild(path);
     });
+  }
+
+  function proportionalMapBubbleRows(allocation) {
+    if(app.settings.mapView!=='bloc')return allocation;
+    const groups=new Map();
+    for(const share of allocation){
+      const bloc=share.party.bloc && findBloc(share.party.bloc);
+      const electoral=bloc?.mode==='electoral';
+      const id=electoral?'electoral:'+bloc.name:share.party.id;
+      if(!groups.has(id))groups.set(id,{...share,seats:0,pct:0,party:electoral?{
+        id,short:bloc.short||bloc.name,party:bloc.name,color:bloc.color||share.party.color,
+      }:share.party});
+      const group=groups.get(id);group.seats+=share.seats;group.pct+=share.pct||0;
+    }
+    return [...groups.values()].sort((a,b)=>b.seats-a.seats||b.pct-a.pct);
+  }
+
+  function renderProportionalMap(svg,result,modeLabel,title,back) {
+    setSvgViewBox(svg,nationalMapViewBoxWithInset(),'proportional-'+result.mode);
+    if(modeLabel)modeLabel.textContent=proportionalMethodLabel()+' · '+result.totalUnits+' seats';
+    if(title)title.textContent='State-list '+(result.mode==='house'?'House':'Senate');
+    if(back)back.style.display='none';
+    const underlay=createMapUnderlayLayer(svg);
+    const nodes=new Map();
+    result.stateResults.forEach(row=>{
+      const shape=statePathByAbbr.get(row.state.abbr);if(!shape)return;
+      const color=mapDisplayColor(row),fill=row.called?color:'#64748b';
+      const underlayPath=appendMapUnderlay(underlay,shape.path,fill,row.called);
+      const path=svgPath(shape.path,'state-path'+(row.state.abbr===app.selectedState?' selected':''));
+      path.style.fill=fill;path.style.setProperty('--party',color);path.dataset.state=row.state.abbr;
+      path.dataset.tip=tooltipHtml(row.state.name,row,row.ev+' seats · '+proportionalMethodLabel());
+      path.addEventListener('click',()=>{app.selectedState=row.state.abbr;app.editingRace='';renderMapSelection();renderSidebar(calculateElection());saveState();});
+      path.addEventListener('mousemove',moveTip);path.addEventListener('mouseenter',showTip);path.addEventListener('mouseleave',hideTip);svg.appendChild(path);
+      nodes.set(row.state.abbr,{path,underlayPath,called:null});
+    });
+    // Lay out the final labels once, including states still counting. Reveal
+    // their existing vector nodes as calls arrive; never rerun geometry per tick.
+    const frames=prepareProportionalPlayback().frames[result.mode],final=frames[100];
+    const layout={...final,stateResults:final.stateResults.map((row,index)=>{
+      const max=new Map();
+      for(const frame of frames)for(const share of proportionalMapBubbleRows(frame.stateResults[index].allocation)){
+        if(share.seats>(max.get(share.party.id)?.seats||0))max.set(share.party.id,share);
+      }
+      return {...row,allocation:[...max.values(),{party:{id:'__unallocated',short:'UNC',color:'#64748b'},seats:row.ev,pct:0}]};
+    })};
+    renderProportionalSeatBubbles(svg,layout);
+    for(const [abbr,node] of nodes){
+      node.bubble=svg.querySelector(`[data-state-bubble="${abbr}"]`);
+      node.line=svg.querySelector(`[data-state-bubble-line="${abbr}"]`);
+      node.slots=new Map([...node.bubble?.querySelectorAll('[data-seat-party]')||[]].map(slot=>[slot.dataset.seatParty,slot]));
+    }
+    proportionalMapNodes={svg,mode:result.mode,mapView:app.settings.mapView,nodes};
+    updateProportionalMap(result);
+  }
+
+  function updateProportionalMap(result) {
+    const cached=proportionalMapNodes;
+    if(!cached || !cached.svg.isConnected || cached.mode!==result.mode || cached.mapView!==app.settings.mapView){renderMap(result);return;}
+    for(const row of result.stateResults){
+      const node=cached.nodes.get(row.state.abbr);if(!node)continue;
+      const bubbleRows=proportionalMapBubbleRows(row.allocation);
+      const signature=JSON.stringify([row.called,row.winner.key||row.winner.party?.id,bubbleRows.map(s=>[s.party.id,s.seats]),row.unallocated]);
+      if(node.signature!==signature){
+        node.signature=signature;
+        node.called=row.called;
+        const color=mapDisplayColor(row),fill=row.called?color:row.countProgress>0?blendHexColors('#64748b',color,.4):'#64748b';
+        node.path.style.fill=fill;node.path.style.setProperty('--party',color);
+        node.underlayPath.style.fill=row.countProgress>0?fill:'none';node.underlayPath.style.stroke=fill;
+        if(node.bubble){
+          node.bubble.style.display='';
+          const active=bubbleRows.filter(s=>s.seats>0).map(s=>({id:s.party.id,seats:s.seats}));
+          if(row.unallocated>0)active.push({id:'__unallocated',seats:row.unallocated});
+          setTextIfChanged(node.bubble.querySelector('title'),row.state.name+' · '+(row.called?'confirmed':'provisional')+' · '+active.map(s=>(s.id==='__unallocated'?'unallocated':bubbleRows.find(a=>a.party.id===s.id)?.party.short||s.id)+' '+s.seats).join(', '));
+          for(const slot of node.slots.values())slot.style.display='none';
+          const d=node.bubble.dataset,cols=Math.min(Number(d.cols),Math.max(1,active.length));
+          active.forEach((share,i)=>{
+            const slot=node.slots.get(share.id);if(!slot)return;
+            slot.style.display='';slot.setAttribute('transform',`translate(${12+i%cols*17},${24+Math.floor(i/cols)*17})`);
+            setTextIfChanged(slot.querySelector('text'),String(share.seats));
+          });
+          const width=cols*17+8,height=Math.ceil(active.length/cols)*17+19,scale=Number(d.scale);
+          node.bubble.querySelector('rect').setAttribute('width',width);node.bubble.querySelector('rect').setAttribute('height',height);
+          node.bubble.querySelector('[data-bubble-label]').setAttribute('x',width/2);
+          node.bubble.setAttribute('transform',`translate(${Number(d.x)+(Number(d.width)-width)*scale/2},${Number(d.y)+(Number(d.height)-height)*scale/2}) scale(${scale})`);
+        }
+        if(node.line)node.line.style.display='';
+      }
+      node.path.dataset.tip=row.called?tooltipHtml(row.state.name,row,row.ev+' seats · '+proportionalMethodLabel()):
+        `<strong>${escapeHtml(row.state.name)}</strong><em>${Math.floor(row.countProgress)}% counted · provisional seats may change · ${row.unallocated} unallocated</em>`;
+    }
+  }
+
+  function proportionalBubbleScore(candidate,bbox,count) {
+    const bw=Math.max(1,bbox[2]-bbox[0]),bh=Math.max(1,bbox[3]-bbox[1]);
+    const targetAspect=clamp(bw/bh,.8,1.8);
+    const aspect=candidate.width/candidate.height;
+    const shapePenalty=Math.abs(Math.log(aspect/targetAspect));
+    const unused=(candidate.cols*Math.ceil(count/candidate.cols)-count)/count;
+    const dx=(candidate.x+candidate.w/2-(bbox[0]+bbox[2])/2)/bw;
+    const dy=(candidate.y+candidate.h/2-(bbox[1]+bbox[3])/2)/bh;
+    // Prefer a balanced, filled grid that follows the state's overall shape.
+    // Readability and centering matter too, but neither wins unconditionally.
+    return shapePenalty*1.4+unused*.35+(1-candidate.scale)*3+Math.hypot(dx,dy)*.45;
+  }
+
+  function renderProportionalSeatBubbles(svg,result) {
+    const layer=document.createElementNS(SVG_NS,'g');layer.classList.add('proportional-seat-bubbles');
+    layer.setAttribute('pointer-events','none');
+    const occupied=[];
+    result.stateResults.filter(row=>row.called).sort((a,b)=>{
+      const area=row=>{const b=statePathByAbbr.get(row.state.abbr)?.bbox;return b?(b[2]-b[0])*(b[3]-b[1]):0;};
+      return area(a)-area(b);
+    }).forEach(row=>{
+      const shape=statePathByAbbr.get(row.state.abbr);if(!shape?.bbox)return;
+      const winners=row.allocation.filter(s=>s.seats>0).sort((a,b)=>b.seats-a.seats||b.pct-a.pct);
+      if(!winners.length)return;
+      const b=shape.bbox,cx=(b[0]+b[2])/2,cy=(b[1]+b[3])/2;
+      const inset=SMALL_STATE_INSET.indexOf(row.state.abbr);
+      const statePath=svg.querySelector(`path[data-state="${row.state.abbr}"]`);
+      let placement=null;
+      // Search several aspect ratios and interior anchors before considering a callout.
+      // Geometry stays vector-sharp, and only recomputes when the map is rebuilt.
+      if(inset<0 && statePath?.isPointInFill){
+        let bestScore=Infinity;
+        for(const scale of [.86,.78,.70,.62]){
+          for(let offset=0;offset<26;offset++){
+            const dx=offset===0?0:((offset-1)%5-2)*.11,dy=offset===0?0:(Math.floor((offset-1)/5)-2)*.11;
+            const ax=cx+dx*(b[2]-b[0]),ay=cy+dy*(b[3]-b[1]);
+            for(let cols=1;cols<=Math.min(5,winners.length);cols++){
+              const width=cols*17+8,height=Math.ceil(winners.length/cols)*17+19,w=width*scale,h=height*scale;
+              const x=ax-w/2,y=ay-h/2;
+              const candidate={x,y,width,height,scale,cols,w,h,interior:true};
+              const score=proportionalBubbleScore(candidate,b,winners.length);
+              if(score>=bestScore)continue;
+              if(occupied.some(r=>x<r.x+r.w+2&&x+w+2>r.x&&y<r.y+r.h+2&&y+h+2>r.y))continue;
+              const fits=[.08,.5,.92].every(fx=>[.08,.5,.92].every(fy=>statePath.isPointInFill(new DOMPoint(x+w*fx,y+h*fy))));
+              if(fits){
+                if(score<bestScore){bestScore=score;placement=candidate;}
+              }
+            }
+          }
+        }
+      }
+      if(!placement){
+        const cols=Math.min(3,winners.length),width=cols*17+8,height=Math.ceil(winners.length/cols)*17+19,scale=.76,w=width*scale,h=height*scale;
+        let x=inset>=0?965:cx-w/2,y=inset>=0?35+inset*61:cy-h/2;
+        const collides=(px,py)=>occupied.some(r=>px<r.x+r.w+3&&px+w+3>r.x&&py<r.y+r.h+3&&py+h+3>r.y);
+        if(collides(x,y)){
+          search:for(let radius=12;radius<=360;radius+=12)for(const [dx,dy] of [[0,-radius],[0,radius],[-radius,0],[radius,0],[-radius,-radius],[radius,radius]]){
+            const px=x+dx,py=y+dy;if(px<0||px+w>1025||py<20||py+h>605||collides(px,py))continue;
+            x=px;y=py;break search;
+          }
+        }
+        placement={x,y,width,height,scale,cols,w,h,interior:false};
+      }
+      const {x,y,width,height,scale,cols,w,h,interior}=placement;
+      occupied.push({x,y,w,h});
+      const group=document.createElementNS(SVG_NS,'g');
+      if(!interior && (inset>=0||Math.abs(x+w/2-cx)>15||Math.abs(y+h/2-cy)>20)){
+        const line=document.createElementNS(SVG_NS,'line');
+        line.dataset.stateBubbleLine=row.state.abbr;
+        for(const [key,value] of Object.entries({x1:cx,y1:cy,x2:x+w/2,y2:y+h/2}))line.setAttribute(key,value);
+        line.setAttribute('stroke','#94a3b8');line.setAttribute('stroke-width','.7');line.setAttribute('opacity','.65');layer.appendChild(line);
+      }
+      group.dataset.stateBubble=row.state.abbr;group.dataset.interior=String(interior);
+      Object.assign(group.dataset,{cols:String(cols),x:String(x),y:String(y),width:String(width),height:String(height),scale:String(scale)});
+      group.setAttribute('transform',`translate(${x},${y}) scale(${scale})`);
+      const title=document.createElementNS(SVG_NS,'title');title.textContent=row.state.name+': '+winners.map(s=>s.party.short+' '+s.seats).join(', ');group.appendChild(title);
+      const plate=document.createElementNS(SVG_NS,'rect');
+      for(const [key,value] of Object.entries({width,height,rx:7,fill:'#0a1726','fill-opacity':'.92',stroke:'#8aa7bf','stroke-width':'.5'}))plate.setAttribute(key,value);
+      group.appendChild(plate);
+      const label=document.createElementNS(SVG_NS,'text');label.textContent=row.state.abbr;
+      label.dataset.bubbleLabel='true';
+      for(const [key,value] of Object.entries({x:width/2,y:11,'text-anchor':'middle',fill:'#dbe9f5','font-size':8,'font-family':'sans-serif','font-weight':600,stroke:'none'}))label.setAttribute(key,value);
+      group.appendChild(label);
+      winners.forEach((share,i)=>{
+        const bx=12+(i%cols)*17,by=24+Math.floor(i/cols)*17;
+        const slot=document.createElementNS(SVG_NS,'g');slot.dataset.seatParty=share.party.id;
+        slot.setAttribute('transform',`translate(${bx},${by})`);
+        const circle=document.createElementNS(SVG_NS,'circle');
+        for(const [key,value] of Object.entries({cx:0,cy:0,r:7.2,fill:share.party.color,stroke:'#ffffff50','stroke-width':'.6'}))circle.setAttribute(key,value);
+        const text=document.createElementNS(SVG_NS,'text'),rgb=parseHexColor(share.party.color);
+        text.textContent=share.seats;
+        for(const [key,value] of Object.entries({x:0,y:.5,'text-anchor':'middle','dominant-baseline':'middle',fill:rgb[0]*.299+rgb[1]*.587+rgb[2]*.114>155?'#081522':'#fff','font-size':8,'font-weight':700,'font-family':'sans-serif',stroke:'none'}))text.setAttribute(key,value);
+        slot.append(circle,text);group.appendChild(slot);
+      });
+      layer.appendChild(group);
+    });
+    svg.appendChild(layer);
   }
 
   function renderSenateMap(svg, result, modeLabel, title, back) {
@@ -4447,6 +5070,7 @@
       width:Math.max(1, (Number(x2) || 0) - (Number(x1) || 0)),
       height:Math.max(1, (Number(y2) || 0) - (Number(y1) || 0)),
     };
+    if (activeMapCameraKey !== key) cancelWheelMapZoom(svg);
     activeMapCameraKey = key;
     let camera = mapCameraByKey.get(key);
     const baseChanged = !camera
@@ -4455,6 +5079,7 @@
       || Math.abs(camera.base.width - base.width) > 0.01
       || Math.abs(camera.base.height - base.height) > 0.01;
     if (baseChanged) {
+      cancelWheelMapZoom(svg);
       camera = {
         base,
         zoom:MAP_MIN_ZOOM,
@@ -4506,16 +5131,81 @@
     applyMapCamera(svg);
   }
 
+  // Keep everything vector. Cached variants remove only subpixel vertices
+  // while moving, and the exact imported path returns when the gesture ends.
+  function districtMotionGeometry(district) {
+    const cached = motionGeometryCache.get(district);
+    if (cached) return cached;
+    const full = district.path;
+    if (!/^[MLZ\d.,\s+\-]+$/i.test(full)) return null;
+    const rings = [...full.matchAll(/M([^M]+)/gi)].map(match =>
+      [...match[0].matchAll(/[ML](-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/gi)].map(point => [Number(point[1]), Number(point[2])]));
+    if (!rings.length || rings.some(ring => ring.length < 3)) return null;
+    const simplify = tolerance => rings.map(ring => {
+      const reduced = simplifyMotionRing(ring, tolerance);
+      return reduced.map((point, index) => `${index ? 'L' : 'M'}${point[0]},${point[1]}`).join('') + 'Z';
+    }).join('');
+    const geometry = { full, coarse:simplify(0.16), medium:simplify(0.06) };
+    motionGeometryCache.set(district, geometry);
+    return geometry;
+  }
+
+  function simplifyMotionRing(points, tolerance) {
+    if (points.length < 8) return points;
+    const keep = new Uint8Array(points.length);
+    keep[0] = keep[points.length - 1] = 1;
+    const stack = [[0, points.length - 1]];
+    while (stack.length) {
+      const [start, end] = stack.pop();
+      let best = tolerance * tolerance, selected = -1;
+      const a = points[start], b = points[end];
+      const dx = b[0] - a[0], dy = b[1] - a[1], length = dx * dx + dy * dy;
+      for (let i = start + 1; i < end; i++) {
+        const p = points[i];
+        const t = length ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / length)) : 0;
+        const distance = (p[0] - a[0] - t * dx) ** 2 + (p[1] - a[1] - t * dy) ** 2;
+        if (distance > best) { best = distance; selected = i; }
+      }
+      if (selected >= 0) { keep[selected] = 1; stack.push([start, selected], [selected, end]); }
+    }
+    const reduced = points.filter((point, i) => keep[i]);
+    return reduced.length >= 3 ? reduced : points;
+  }
+
+  function updateMotionGeometry(view, zoom, moving) {
+    const scale = mapMotionScale * zoom;
+    const detail = !moving ? 'full' : scale * 0.16 <= 0.3 ? 'coarse' : scale * 0.06 <= 0.3 ? 'medium' : 'full';
+    const pad = view.width * 0.02;
+    motionGeometryNodes.forEach(node => {
+      const b = node.bbox;
+      const visible = !b || (b[2] >= view.x - pad && b[0] <= view.x + view.width + pad && b[3] >= view.y - pad && b[1] <= view.y + view.height + pad);
+      if (visible !== node.visible) {
+        node.path.style.display = visible ? '' : 'none';
+        if (node.underlayPath) node.underlayPath.style.display = visible ? '' : 'none';
+        node.visible = visible;
+      }
+      if (node.geometry && node.detail !== detail) {
+        node.path.setAttribute('d', node.geometry[detail]);
+        node.detail = detail;
+      }
+    });
+  }
+
   function applyMapCamera(svg = document.getElementById('real-us-map')) {
     const camera = currentMapCamera();
     const view = mapCameraView(camera);
     if (!svg || !camera || !view) return;
     const layer = svg.querySelector(':scope > .map-camera-layer');
+    const moving = !!mapGesture?.dragged || !!wheelMapAnchor;
+    updateMotionGeometry(view, camera.zoom, moving);
+    if (layer) layer.style.pointerEvents = moving ? 'none' : '';
     if (layer) {
       const translateX = camera.base.x - view.x * camera.zoom;
       const translateY = camera.base.y - view.y * camera.zoom;
-      svg.setAttribute('viewBox', `${camera.base.x} ${camera.base.y} ${camera.base.width} ${camera.base.height}`);
-      layer.setAttribute('transform', `translate(${translateX.toFixed(4)} ${translateY.toFixed(4)}) scale(${camera.zoom.toFixed(5)})`);
+      const box = `${camera.base.x} ${camera.base.y} ${camera.base.width} ${camera.base.height}`;
+      if (svg.getAttribute('viewBox') !== box) svg.setAttribute('viewBox', box);
+      const transform = `translate(${translateX.toFixed(4)} ${translateY.toFixed(4)}) scale(${camera.zoom.toFixed(5)})`;
+      layer.setAttribute('transform', transform);
     } else {
       svg.setAttribute('viewBox', `${view.x.toFixed(5)} ${view.y.toFixed(5)} ${view.width.toFixed(5)} ${view.height.toFixed(5)}`);
     }
@@ -4525,10 +5215,43 @@
 
   function scheduleMapCamera(svg = document.getElementById('real-us-map')) {
     if (mapCameraFrame) return;
-    mapCameraFrame = requestAnimationFrame(() => {
+    mapCameraFrame = requestAnimationFrame(timestamp => {
       mapCameraFrame = 0;
+      const camera = currentMapCamera();
+      if (camera && wheelMapZoomTarget !== null) {
+        const elapsed = wheelMapFrameTime ? Math.min(50, Math.max(1, timestamp - wheelMapFrameTime)) : 16;
+        wheelMapFrameTime = timestamp;
+        const distance = Math.log(wheelMapZoomTarget / camera.zoom);
+        const settled = Math.abs(distance) < 0.002;
+        const nextZoom = settled ? wheelMapZoomTarget : camera.zoom * Math.exp(distance * (1 - Math.exp(-elapsed / 45)));
+        if (wheelMapAnchor) {
+          const ratio = camera.zoom / nextZoom;
+          camera.centerX = wheelMapAnchor.x + (camera.centerX - wheelMapAnchor.x) * ratio;
+          camera.centerY = wheelMapAnchor.y + (camera.centerY - wheelMapAnchor.y) * ratio;
+        }
+        camera.zoom = nextZoom;
+        if (settled) wheelMapZoomTarget = null;
+      }
       applyMapCamera(svg);
+      if (wheelMapZoomTarget !== null) scheduleMapCamera(svg);
     });
+  }
+
+  function cancelWheelMapZoom(svg = document.getElementById('real-us-map')) {
+    clearTimeout(wheelMapAnchorTimer);
+    wheelMapZoomTarget = null;
+    wheelMapFrameTime = 0;
+    wheelMapAnchor = null;
+    svg?.classList.remove('is-camera-moving');
+  }
+
+  function finishWheelMapZoom(svg) {
+    if (wheelMapZoomTarget !== null) {
+      wheelMapAnchorTimer = setTimeout(() => finishWheelMapZoom(svg), 40);
+      return;
+    }
+    cancelWheelMapZoom(svg);
+    scheduleMapCamera(svg);
   }
 
   function updateMapZoomControls(zoom = currentMapCamera()?.zoom || MAP_MIN_ZOOM) {
@@ -4536,7 +5259,8 @@
     const zoomIn = document.querySelector('[data-action="map-zoom-in"]');
     const zoomOut = document.querySelector('[data-action="map-zoom-out"]');
     const reset = document.querySelector('[data-action="map-zoom-reset"]');
-    if (level) level.textContent = `${Math.round(zoom * 100)}%`;
+    const label = `${Math.round(zoom * 100)}%`;
+    if (level && level.textContent !== label) level.textContent = label;
     if (zoomIn) zoomIn.disabled = zoom >= MAP_MAX_ZOOM - 0.001;
     if (zoomOut) zoomOut.disabled = zoom <= MAP_MIN_ZOOM + 0.001;
     if (reset) reset.disabled = zoom <= MAP_MIN_ZOOM + 0.001;
@@ -4575,11 +5299,13 @@
   }
 
   function zoomMapBy(factor) {
+    cancelWheelMapZoom();
     const camera = currentMapCamera();
     if (camera) setMapZoom(camera.zoom * factor);
   }
 
   function resetMapCamera() {
+    cancelWheelMapZoom();
     const camera = currentMapCamera();
     if (!camera) return;
     camera.zoom = MAP_MIN_ZOOM;
@@ -4610,6 +5336,7 @@
     const camera = currentMapCamera();
     if (!camera || !pointer) return;
     const scale = mapScreenScale(svg);
+    mapMotionScale = Math.max(scale.x, scale.y) / camera.zoom;
     mapGesture = {
       type:'pan',
       pointerId:pointer.id,
@@ -4632,6 +5359,7 @@
       y:(pointers[0].y + pointers[1].y) / 2,
     };
     const scale = mapScreenScale(svg);
+    mapMotionScale = Math.max(scale.x, scale.y) / camera.zoom;
     mapGesture = {
       type:'pinch',
       ids:pointers.map(pointer => pointer.id),
@@ -4704,6 +5432,7 @@
     else mapGesture = null;
     if (mapPointers.size < 2 && !mapGesture?.dragged) svg.classList.remove('is-panning');
     if (!mapPointers.size) svg.classList.remove('is-panning');
+    scheduleMapCamera(svg);
   }
 
   function panMapByKeyboard(svg, horizontal, vertical) {
@@ -4725,17 +5454,24 @@
       event.preventDefault();
       hideTip();
       svg.classList.add('is-camera-moving');
-      if (!wheelMapAnchor) wheelMapAnchor = mapClientPoint(svg, event.clientX, event.clientY);
+      if (!wheelMapAnchor) {
+        wheelMapAnchor = mapClientPoint(svg, event.clientX, event.clientY);
+        const scale = mapScreenScale(svg);
+        mapMotionScale = Math.max(scale.x, scale.y) / camera.zoom;
+      }
       clearTimeout(wheelMapAnchorTimer);
-      wheelMapAnchorTimer = setTimeout(() => {
-        wheelMapAnchor = null;
-        svg.classList.remove('is-camera-moving');
-      }, 90);
-      const factor = Math.exp(-event.deltaY * 0.0018);
-      setMapZoom(camera.zoom * factor, wheelMapAnchor);
+      wheelMapAnchorTimer = setTimeout(() => finishWheelMapZoom(svg), 140);
+      // Mouse wheels can report lines or pages; trackpads usually report pixels.
+      // Accumulate input without painting or reading layout for every event.
+      const units = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? window.innerHeight : 1;
+      const factor = Math.exp(-clamp(event.deltaY * units, -160, 160, 0) * 0.0018);
+      wheelMapZoomTarget = clamp((wheelMapZoomTarget ?? camera.zoom) * factor, MAP_MIN_ZOOM, MAP_MAX_ZOOM, camera.zoom);
+      scheduleMapCamera(svg);
     }, { passive:false });
     svg.addEventListener('pointerdown', event => {
       if (event.pointerType === 'mouse' && event.button !== 0) return;
+      cancelWheelMapZoom(svg);
+      if (!mapPointers.size) suppressMapClickUntil = 0;
       mapPointers.set(event.pointerId, { id:event.pointerId, x:event.clientX, y:event.clientY });
       if (mapPointers.size >= 2) startMapPinch(svg);
       else startMapPan(svg, mapPointers.get(event.pointerId));
@@ -4945,6 +5681,10 @@
   }
 
   function selectedRaceTarget(result) {
+    if(result.proportional){
+      const row=result.stateResults.find(r=>r.state.abbr===app.selectedState)||result.stateResults[0];
+      return {kind:'state',id:row.state.abbr,title:row.state.name,subtitle:row.ev+' seats · '+proportionalMethodLabel(),row,state:row.state};
+    }
     if (app.electionMode === 'house') {
       const district = houseDistrictById.get(app.selectedDistrict) || houseDistricts[0];
       if (district) {
@@ -5121,7 +5861,26 @@
     return `${Math.round(row.countyReportingPct || 0)}% county vote in · ${target.kind === 'state' ? 'state gray until call' : 'county gray until call'}`;
   }
 
+  function renderProportionalSidebar(result) {
+    const row=result.stateResults.find(r=>r.state.abbr===app.selectedState)||result.stateResults[0];
+    const target=selectedRaceTarget(result),editing=app.editingRace===raceTargetKey(target);
+    const card=document.getElementById('selected-race-card');
+    if(card)card.classList.add('proportional-results-card');
+    if(card && row)setStableMarkup(card,`<div class="race-card-head"><div><span class="election-kicker">State constituency</span><h3>${escapeHtml(row.state.name)}</h3></div><b class="pr-total-seats">${row.ev}<small>seats</small></b></div>
+      <div class="pr-count-status ${row.called?'confirmed':''}"><span></span>${row.called?'Allocation confirmed':row.countProgress.toFixed(0)+'% counted'}<small>${escapeHtml(proportionalMethodLabel())}</small></div>
+      <button class="election-btn small" data-action="toggle-race-edit" data-race-kind="state" data-race-id="${escapeAttr(row.state.abbr)}">${editing?'Close edit':'Edit statewide vote'}</button>
+      ${row.edited?`<button class="election-btn small" data-action="reset-race-edit" data-race-kind="state" data-race-id="${escapeAttr(row.state.abbr)}">Reset vote override</button>`:''}
+      ${editing?renderRaceEditForm(target):''}
+      ${row.called&&row.unallocated===row.ev?'<p class="race-pending">No list meets this state’s threshold. Seats remain unallocated; lower the threshold to allocate them.</p>':''}
+      ${row.called?`<div class="pr-party-results">${row.allocation.filter(s=>s.pct>0).map(s=>`<div class="pr-party-result" style="--party:${escapeAttr(s.party.color)}"><span class="pr-party-name" title="${escapeAttr(s.party.party)}"><i></i>${escapeHtml(s.party.short)}</span><span class="pr-vote-pct">${pct(s.pct)}</span><b class="pr-seat-count">${s.seats}<small>${s.seats===1?'seat':'seats'}</small></b><div class="pr-vote-track"><i style="width:${s.pct.toFixed(2)}%"></i></div></div>`).join('')}</div>`:`<div class="race-pending">Counting in progress. Map bubbles show provisional seats; gray seats are not allocated yet. Detailed vote shares appear when the count finishes.</div>`}`);
+    const battle=document.getElementById('battle-card');
+    if(battle){battle.classList.add('proportional-rules-card');setStableMarkup(battle,`<span class="election-kicker">How seats are allocated</span><div class="pr-rule-stats"><div><b>435</b><span>House seats</span></div><div><b>150</b><span>Senate seats</span></div></div><ul><li><b>House</b> · Population-based state delegations, using the 2020 Census apportionment.</li><li><b>Senate</b> · One guaranteed seat per state, plus 100 seats distributed by population using Sainte-Laguë. Each state’s seats are then divided between parties.</li><li><b>Party allocation</b> · ${escapeHtml(proportionalMethodLabel())} within each state; electoral blocs can pool votes. The toggle also applies when splitting a bloc’s seats among members.</li><li><b>State threshold</b> · ${proportionalThreshold()?proportionalThreshold()+'% of statewide party votes':'Off'}. Electoral blocs qualify on their combined vote; members are not tested again. Coalition-only lists qualify separately.</li></ul><p class="pr-map-note">Colored bubbles are provisional until a state completes counting; gray bubbles are unallocated seats. The simulated reporting order follows first US poll closures (Eastern time), not actual election-night returns. Custom maps are preserved.</p>`);}
+  }
+
   function renderSidebar(result) {
+    if(result.proportional){renderProportionalSidebar(result);return;}
+    document.getElementById('selected-race-card')?.classList.remove('proportional-results-card');
+    document.getElementById('battle-card')?.classList.remove('proportional-rules-card');
     const target = selectedRaceTarget(result);
     const row = target.row;
     const targetKey = raceTargetKey(target);
@@ -5380,7 +6139,14 @@
           <button class="${bloc.mode === 'electoral' ? 'active' : ''}" data-action="set-bloc-kind" data-bloc="${escapeAttr(bloc.name)}" data-bloc-kind="electoral" title="Pool member votes and run as one electoral ticket">Electoral</button>
           <button class="${bloc.mode === 'coalition' ? 'active' : ''}" data-action="set-bloc-kind" data-bloc="${escapeAttr(bloc.name)}" data-bloc-kind="coalition" title="Parties compete separately, but seats combine after the election">Coalition</button>
         </div>
-        <label class="bloc-share-control ${group.parties.length ? '' : 'disabled'}" title="Alliance national vote">
+        ${bloc.mode === 'electoral' ? `<div class="bloc-ticket-controls">
+          ${[['presidentPartyId','President'],['vicePresidentPartyId','Vice President']].map(([field, label]) => `
+            <label><span>${label}</span><select data-bloc-ticket="${escapeAttr(bloc.name)}" data-ticket-office="${field}" aria-label="${escapeAttr(bloc.name)} ${label}" ${disabled}>
+              <option value="">${field === 'presidentPartyId' ? 'Automatic · leading member' : 'President’s running mate'}</option>
+              ${group.parties.map(party => `<option value="${escapeAttr(party.id)}" ${bloc[field] === party.id ? 'selected' : ''}>${escapeHtml(party.short)} · ${escapeHtml(party.candidate || party.party)}</option>`).join('')}
+            </select></label>`).join('')}
+        </div>` : ''}
+        <label class="bloc-share-control ${group.parties.length ? '' : 'disabled'}" title="Effective national vote points; regional members are weighted by ballot coverage">
           <b>Vote</b>
           <input type="number" min="0.1" max="${escapeAttr(blocShareMax(group.parties))}" step="0.1" value="${escapeAttr(totalBase.toFixed(1))}" data-bloc-share="${escapeAttr(bloc.name)}" ${disabled} />
           <em>%</em>
@@ -5414,11 +6180,11 @@
   }
 
   function blocBaseTotal(name) {
-    return blocParties(name).reduce((sum, party) => sum + Math.max(0, Number(party.base) || 0), 0);
+    return blocParties(name).reduce((sum, party) => sum + partyEffectiveNationalBase(party), 0);
   }
 
   function blocShareMax(parties) {
-    return 100;
+    return Math.min(100, parties.reduce((sum, party) => sum + 100 * ballotCoverageShare(party), 0));
   }
 
   function setBlocShare(name, value) {
@@ -5427,18 +6193,25 @@
     if (!Number.isFinite(numericValue)) return false;
     const members = blocParties(name);
     if (!members.length) return false;
-    const currentTotal = members.reduce((sum, party) => sum + Math.max(0, Number(party.base) || 0), 0);
-    const targetTotal = clamp(numericValue, 0.1, blocShareMax(members), currentTotal || members.length);
-    if (currentTotal <= 0.01) {
-      const evenShare = targetTotal / members.length;
-      members.forEach(party => { party.base = clamp(evenShare, 0.1, 100, evenShare); });
-      invalidateElectionResults();
-      return true;
+    const covered = members.map(party => ({
+      party, coverage:ballotCoverageShare(party),
+      base:Math.max(0.1, Number(party.base) || 0),
+    })).filter(row => row.coverage > 0);
+    if (!covered.length) return false;
+    const minimum = covered.reduce((sum, row) => sum + 0.1 * row.coverage, 0);
+    const targetTotal = clamp(numericValue, minimum, blocShareMax(members), blocBaseTotal(name));
+    // Scale local bases, but measure the target in national points. Once a
+    // member reaches 100% locally, distribute the remainder to other members.
+    let low = 0;
+    let high = 1000;
+    for (let step = 0; step < 50; step++) {
+      const ratio = (low + high) / 2;
+      const total = covered.reduce((sum, row) => sum + clamp(row.base * ratio, 0.1, 100, 0.1) * row.coverage, 0);
+      if (total < targetTotal) low = ratio;
+      else high = ratio;
     }
-    const ratio = targetTotal / currentTotal;
-    members.forEach(party => {
-      const nextBase = (Math.max(0, Number(party.base) || 0) * ratio);
-      party.base = clamp(nextBase, 0.1, 100, nextBase);
+    covered.forEach(row => {
+      row.party.base = clamp(row.base * ((low + high) / 2), 0.1, 100, 0.1);
     });
     invalidateElectionResults();
     return true;
@@ -5589,7 +6362,50 @@
         saveState();
         return;
       }
+      if(action==='set-proportional-method'){
+        if(!app.settings.proportionalMode)return;
+        const method=actionEl.dataset.proportionalMethod==='dhondt'?'dhondt':'sainte';
+        if(method===proportionalMethod())return;
+        stopCount();app.settings.proportionalMethod=method;app.settings.investitureConfirmed='';
+        invalidateElectionResults();renderAll();saveState();return;
+      }
+      if (action === 'toggle-proportional') {
+        stopCount();app.settings.proportionalMode=!app.settings.proportionalMode;
+        if(app.settings.proportionalMode){app.electionMode='house';app.selectedState=app.selectedState==='DC'?'MD':app.selectedState;}
+        app.settings.investitureConfirmed='';app.editingRace='';
+        invalidateElectionResults();renderAll();saveState();return;
+      }
+      if(action==='investiture-round-1'||action==='investiture-round-2'){
+        if(!app.settings.proportionalMode)return;
+        app.settings.investitureRound=action.endsWith('2')?2:1;app.settings.investitureConfirmed='';renderGovernmentAssembly();saveState();return;
+      }
+      if(action==='hold-investiture'){
+        if(!app.settings.proportionalMode||!governmentUnlocked()||!findParty(app.government.presidentId))return;
+        const house=calculateElectionMode('house'),round=app.settings.investitureRound||1;
+        const vote=investitureResult(house.parties,app.government,round);
+        app.settings.investitureConfirmed=vote.passed?investitureSignature(house):'';
+        app.government.history=[{id:'investiture-'+Date.now(),label:'Investiture · ballot '+round,result:vote.passed?'Passed':'Failed',detail:vote.yes+' yes · '+vote.no+' no · '+vote.abstain+' abstentions',passed:vote.passed},...app.government.history].slice(0,8);
+        renderGovernmentAssembly();saveState();return;
+      }
+      if (action === 'toggle-midterms') {
+        app.settings.electionCycle = app.settings.electionCycle === 'midterms' ? 'general' : 'midterms';
+        if (app.settings.electionCycle === 'midterms' && app.electionMode === 'president') app.electionMode = 'senate';
+        app.selectedCounty = '';
+        app.selectedElectoralUnit = '';
+        app.selectedSenateClass = '';
+        app.editingRace = '';
+        if (app.electionMode === 'senate' && app.selectedState === 'DC') app.selectedState = 'MD';
+        invalidateElectionResults();
+        renderAll();
+        saveState();
+        return;
+      }
+      if (action === 'export-hemicycle') {
+        exportChamberToHemicycle();
+        return;
+      }
       if (action === 'mode-president' || action === 'mode-senate' || action === 'mode-house') {
+        if (action === 'mode-president' && (app.settings.electionCycle === 'midterms'||app.settings.proportionalMode)) return;
         app.electionMode = action === 'mode-senate' ? 'senate' : action === 'mode-house' ? 'house' : 'president';
         app.selectedCounty = '';
         app.selectedElectoralUnit = '';
@@ -5606,6 +6422,7 @@
         return;
       }
       if (action === 'map-states' || action === 'back-states' || action === 'map-counties') {
+        if (app.settings.electionCycle === 'midterms') return;
         app.electionMode = 'president';
         app.mapMode = action === 'map-counties' ? 'counties' : 'states';
         app.selectedSenateClass = '';
@@ -5916,6 +6733,20 @@
     });
     wrap.addEventListener('change', event => {
       const target = event.target;
+      if (target instanceof HTMLSelectElement && target.dataset.blocTicket) {
+        const bloc = findBloc(target.dataset.blocTicket);
+        const field = target.dataset.ticketOffice;
+        if (bloc && ['presidentPartyId','vicePresidentPartyId'].includes(field)
+          && (!target.value || blocParties(bloc.name).some(party => party.id === target.value))) {
+          bloc[field] = target.value;
+          app.government.presidentId = '';
+          app.government.vicePresidentId = '';
+          invalidateElectionResults();
+          renderAll();
+          saveState();
+        }
+        return;
+      }
       if (target instanceof HTMLSelectElement && target.id === 'house-map-import-state') {
         houseMapImportState = target.value;
         houseMapImportStatus = customHouseMaps.has(houseMapImportState)
@@ -6215,7 +7046,7 @@
       const nameLine = card.querySelector('.candidate-name-line');
       if (nameLine) {
         const existing = nameLine.querySelector('.winner-check');
-        const won = candidateHasWon(row, leaderId, result.majority);
+        const won = !(result.proportional && result.projections) && candidateHasWon(row, leaderId, result.majority);
         if (won && !existing) nameLine.insertAdjacentHTML('beforeend', winnerCheckMarkup(cardColor, claimWinnerBadgeAnimation(row)));
         if (won && existing) setStyleVarIfChanged(existing, '--party', cardColor);
         if (!won && existing) existing.remove();
@@ -6403,6 +7234,24 @@
     return [];
   }
 
+  function exportChamberToHemicycle() {
+    if (!['house','senate'].includes(app.electionMode) || app.settings.reporting < 100) return;
+    const result = calculateElection();
+    const rows = result.parties.filter(row => Number(row.ev) > 0);
+    if (!rows.length) return;
+    parties = rows.map((row, index) => ({
+      id:'p' + index, name:row.party.party, seats:Number(row.ev), color:row.party.color,
+      candidate:row.party.candidate, ideology:row.party.profile || '',
+      westminsterRole:'crossbench',
+    }));
+    idCounter = parties.length;
+    votes = {};
+    coalitionData = { name:'', partyIds:[], supportIds:[], passiveIds:[] };
+    setView('donut');
+    fullRefresh();
+    autoSave();
+  }
+
   function electionSlidersFromParliamentParty(party) {
     const key = String(party.ideology || '').toLowerCase();
     const presets = {
@@ -6565,10 +7414,28 @@
     queueSaveState();
   }
 
+  function renderProportionalPlaybackFrame() {
+    const result=calculateElection();
+    const seatKey=result.mode+':'+JSON.stringify(result.parties.map(row=>[row.party.id,row.ev]))+':'+result.projections;
+    refreshCandidateCards(result);
+    if(seatKey!==proportionalPlaybackSeatKey){
+      proportionalPlaybackSeatKey=seatKey;
+      renderCountLine(result);
+      renderChamberGraph(result);
+    }
+    updateProportionalMap(result);
+    renderSidebar(result);
+    const status=document.getElementById('simulation-status');
+    if(status)setTextIfChanged(status,status.textContent.replace(/^\d+% called/,Math.round(app.settings.reporting)+'% called'));
+    if(app.settings.reporting>=100){renderGovernmentAssembly(result);renderControls();}
+  }
+
   function stopCount() {
     if (countTimer) {
       clearInterval(countTimer);
       countTimer = null;
+      // Checkpoint on pause/finish, not once per counting tick.
+      saveState();
     }
   }
 
@@ -6583,12 +7450,13 @@
       return;
     }
     const step = 100 / Math.max(30, Number(app.settings.simDuration) || 120);
+    if(app.settings.proportionalMode)prepareProportionalPlayback();
     countTimer = setInterval(() => {
       app.settings.reporting = clamp(app.settings.reporting + step, 0, 100);
-      invalidateElectionResults();
+      if(!app.settings.proportionalMode)invalidateElectionResults();
       if (app.settings.reporting >= 100) stopCount();
-      renderElectionReadouts({ includeMap:true });
-      saveState();
+      if(app.settings.proportionalMode)renderProportionalPlaybackFrame();
+      else renderElectionReadouts({ includeMap:true });
     }, 1000);
     renderControls();
   }
@@ -6806,7 +7674,7 @@
   }
 
   function showTip(event) {
-    if (mapGesture?.dragged) return;
+    if (mapGesture?.dragged || wheelMapAnchor) return;
     ensureTooltip();
     tooltip.innerHTML = event.currentTarget.dataset.tip || '';
     tooltip.classList.add('visible');
@@ -6814,7 +7682,7 @@
   }
 
   function moveTip(event) {
-    if (!tooltip || mapGesture?.dragged) return;
+    if (!tooltip || !tooltip.classList.contains('visible') || mapGesture?.dragged || wheelMapAnchor) return;
     const pad = 14;
     const width = tooltip.offsetWidth || 280;
     const height = tooltip.offsetHeight || 170;
@@ -6909,7 +7777,7 @@
       try {
         if (typeof stopElectionNightAuto === 'function') stopElectionNightAuto(false);
       } catch (e) {}
-      saveState();
+      flushSavedState();
       return;
     }
     try {
@@ -6917,5 +7785,6 @@
     } catch (e) {}
   });
 
+  document.addEventListener('keydown', handleHouseExportShortcut);
   installHooks();
 })();

@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="ca">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Catalunya · Election simulator</title>
+  <link rel="stylesheet" href="catalonia.css">
+</head>
+<body>
+  <main>
+    <header class="panel"><div><span class="eyebrow">Catalunya · Parlament</span><h1>Election map</h1><p>2015 baseline · Your scenario, your rules</p></div><nav><a class="button" href="parliament.html">← Parliament / US elections</a><button id="restore">Reload 2015</button><button id="export">Export scenario</button><label class="button">Import<input id="import" type="file" accept="application/json,.json" hidden></label></nav></header>
+    <section class="panel controls" aria-label="Electoral rules">
+      <label>Constituencies<select id="districts"><option value="provinces">Actual · four constituencies</option><option value="national">Alternative · single constituency</option><option value="comarques">Alternative · comarca constituencies</option></select></label>
+      <label>Allocation<select id="method"><option value="dhondt">D’Hondt</option><option value="sainte">Sainte-Laguë</option><option value="hare">Hare · largest remainder</option></select></label>
+      <label>Threshold · valid votes<input id="threshold" type="number" min="0" max="30" step="0.1">%</label>
+      <label>Map labels<input id="labels" type="checkbox"></label>
+      <button id="transfer">Send seats to hemicycle</button>
+    </section>
+    <p id="rules" class="notice"></p><p id="status" role="status" aria-live="polite"></p>
+    <section id="cards" class="cards" aria-label="Party results"></section>
+    <section class="panel"><div class="section-head"><h2>Road to 68</h2><span id="majority"></span></div><div id="seat-bar" class="seat-bar"></div><div class="count-controls"><label>Simulated reporting <input id="reporting" type="range" min="0" max="100" step="1"><output id="reporting-value"></output></label><label>Counting speed <select id="countSpeed"><option value="0.25">0.25× · slow</option><option value="0.5">0.5×</option><option value="1">1× · normal</option><option value="2">2×</option><option value="4">4×</option><option value="8">8× · fast</option></select></label><button id="play">▶ Count</button><small>Uneven reporting batches can swing provisional seats. Votes lock at local completion; seats lock when their constituency completes. Reporting is illustrative, not historical election-night timing.</small></div></section>
+    <div class="workspace"><section class="panel map-panel"><div class="section-head"><h2>Comarques</h2><div><button id="zoom-in" aria-label="Zoom in">+</button><button id="zoom-out" aria-label="Zoom out">−</button><button id="zoom-reset">Reset</button></div></div><svg id="map" viewBox="0 0 640 640" role="img" aria-label="Interactive comarca results map"><g id="map-layer"></g></svg><p class="notice">Click a comarca for details · scroll to zoom · drag to pan. Comarques do not allocate seats under the actual rules.</p><div id="detail" aria-live="polite"></div></section>
+      <aside class="panel"><h2>Government builder</h2><p>68 seats for an absolute majority. A second investiture ballot uses a simple majority; abstentions can matter.</p><div id="government"></div><div id="government-result" class="government-result"></div><h2>Constituency results</h2><div id="regions"></div></aside></div>
+    <section class="panel"><div class="section-head"><div><span class="eyebrow">Parties and electoral alliances</span><h2>Scenario setup</h2></div><button id="add">+ Add party</button></div><p class="notice">Vote targets are percentages of votes to candidatures (excluding blank ballots), normalized to 100%. Local 2015 patterns are preserved where possible. Identical alliance names pool votes before seat allocation; government selection only combines seats afterwards.</p><div id="editor"></div></section>
+    <footer class="panel"><h2>Sources & model notes</h2><p><a href="https://www.gencat.cat/eleccions/epc2015resultats/09AU/DAU09000CI_L2.htm">Generalitat · definitive 2015 constituency results</a> · <a href="https://www.gencat.cat/eleccions/epc2015resultats/09AU/DAU09000CR_L2.htm">2015 comarca results</a> · <a href="https://www.parlament.cat/pcat/parlament/que-es-el-parlament/procediment-electoral/">Parlament · electoral procedure</a> · <a href="https://www.icgc.cat/ca/Geoinformacio-i-mapes/Dades-i-productes/Geoinformacio-cartografica/Divisions-administratives">ICGC · boundaries</a></p><p>135 seats: Barcelona 85, Girona 17, Lleida 15, Tarragona 18. The actual system is D’Hondt with a 3% constituency threshold including blank votes. Alternatives are hypothetical. Current generalized boundaries are used, with Lluçanès merged into Osona for 2015; other historical boundary changes may remain. Comarca totals exclude some votes present in constituency totals (including overseas votes). No forecast or ideological prediction is implied.</p></footer>
+  </main>
+  <script src="catalonia-data.js"></script><script src="catalonia-regional-profiles.js"></script><script src="catalonia-municipal-data.js"></script><script src="catalonia.js"></script>
+</body></html>

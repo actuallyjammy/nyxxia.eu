@@ -1,0 +1,17 @@
+/* Shared Catalunya election presentation; other views retain their original layout. */
+#catalonia-election-wrap .election-topbar{width:100%!important;max-width:none!important;text-align:left!important}
+#catalonia-election-wrap{display:none}#catalonia-election-wrap.visible{display:block}
+#catalonia-election-wrap input,#catalonia-election-wrap select{background:#081726;color:#e8f4fc;border:1px solid #284d64;border-radius:8px;padding:9px;font:13px var(--font-mono,monospace);min-width:0}
+#catalonia-election-wrap label{color:var(--muted);display:flex;gap:8px;align-items:center;font-size:12px;flex-wrap:wrap}
+#catalonia-election-wrap input[type=number]{width:90px}#catalonia-election-wrap input[type=color]{width:44px;padding:4px}#catalonia-election-wrap input[type=range]{padding:0;accent-color:#8ed5d0}
+#catalonia-election-wrap .cat-rule-controls{flex-wrap:wrap;gap:14px}
+#catalonia-election-wrap .editor-row{display:grid;grid-template-columns:44px minmax(160px,1.2fr) 90px minmax(120px,1fr) auto;gap:10px;padding:14px;border:1px solid var(--border-hi);border-radius:12px;background:#ffffff04}
+#catalonia-election-wrap .editor-row small{grid-column:2/-1;color:var(--muted);font-size:12px}#catalonia-election-wrap .editor-row input{width:100%}
+#catalonia-election-wrap .candidate-strip{grid-template-columns:repeat(auto-fit,minmax(min(100%,350px),1fr))}
+#catalonia-election-wrap .count-line{display:flex;position:relative;overflow:hidden;height:26px;border-radius:8px;background:#193246}#catalonia-election-wrap .count-line:after{content:'';position:absolute;left:50.37%;top:0;height:100%;border-left:2px solid #fff}
+#catalonia-election-wrap .count-controls{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-top:14px}#catalonia-election-wrap .count-controls small{flex-basis:100%;color:var(--muted);font-size:11px}
+#catalonia-election-wrap .cat-sidebar{display:flex;flex-direction:column;gap:16px}#catalonia-election-wrap .cat-sidebar>h2,#catalonia-election-wrap .cat-sidebar>p,#catalonia-election-wrap #government,#catalonia-election-wrap #government-result,#catalonia-election-wrap #regions{padding:0 18px}
+#catalonia-election-wrap .result-row{display:flex;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid #ffffff12;font-size:13px}#catalonia-election-wrap .result-row small{color:var(--muted)}#catalonia-election-wrap #government-result{color:#9be0d5;font-size:20px;margin:14px 0}
+#catalonia-election-wrap .notice,#catalonia-election-wrap .cat-source-notes p{color:var(--muted);font-size:12px;line-height:1.6}#catalonia-election-wrap .cat-source-notes a{color:#8ecde7}#catalonia-election-wrap #status{color:#8ed5d0;min-height:1em}
+#catalonia-election-wrap .real-us-map{width:100%;height:100%;touch-action:none;cursor:grab}#catalonia-election-wrap .real-us-map path{stroke:#081826;stroke-width:1;vector-effect:non-scaling-stroke;cursor:pointer}#catalonia-election-wrap .real-us-map path:hover,#catalonia-election-wrap .real-us-map path.selected{stroke:#fff;stroke-width:2}#catalonia-election-wrap .real-us-map text{font:10px sans-serif;fill:white;paint-order:stroke;stroke:#081826;stroke-width:2;pointer-events:none}#catalonia-election-wrap #cat-municipal-list button{margin:3px;max-width:100%;white-space:normal}
+@media(max-width:760px){#catalonia-election-wrap .editor-row{grid-template-columns:44px minmax(100px,1fr) 85px}#catalonia-election-wrap .editor-row .alliance{grid-column:2/3}#catalonia-election-wrap .editor-row small{grid-column:1/-1}}
