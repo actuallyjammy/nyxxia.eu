@@ -24,3 +24,7 @@ npm run dev
 ```
 
 `npm run build` exports to `out/`. Simulator assets are served from `public/`; the Parliament and Catalunya assets were synchronized from the maintained local HTML project. Browser saves remain local to each browser and origin.
+
+## Simulator languages
+
+`parliament.html` and `catalonia.html` default to Catalan. The Català / English switch changes the interface and remembers the selection in `parliament_language`. The shared `public/parliament-i18n.js` dictionary localizes rendered labels, accessible descriptions, dialogs and dynamic election views; input values and the simulation save format remain unchanged. Keep its script and stylesheet references when updating the HTML from the local simulator source.

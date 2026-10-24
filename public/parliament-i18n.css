@@ -1,0 +1,33 @@
+.language-switcher {
+  position: fixed; left: 12px; bottom: 12px; z-index: 10001;
+  display: flex; gap: 2px; padding: 3px; border-radius: 8px;
+  background: var(--card, #1a1a1e); border: 1px solid var(--border-hi, #777);
+  box-shadow: 0 2px 12px #0002;
+}
+.language-switcher button {
+  font: 12px/1.4 system-ui, sans-serif; padding: 6px 9px; border: 0;
+  border-radius: 5px; background: transparent; color: var(--text, #eee); cursor: pointer;
+}
+.language-switcher button[aria-pressed="true"] { background: #39765b; color: #fff; }
+.language-switcher button:focus-visible { outline: 2px solid #76bfa0; outline-offset: 2px; }
+html[lang="ca"] .view-toggle-wrap { flex-wrap: wrap; }
+/* Catalan labels need room instead of being truncated to the English widths. */
+html[lang="ca"] .view-toggle-wrap { grid-template-columns: repeat(auto-fit, minmax(min(100%, 185px), 1fr)); }
+html[lang="ca"] .view-btn,
+html[lang="ca"] .analysis-tab,
+html[lang="ca"] .election-top-actions .election-btn {
+  white-space: normal; overflow: visible; text-overflow: clip; line-height: 1.45;
+}
+html[lang="ca"] .analysis-tabs { flex-wrap: wrap; }
+@media (max-width: 600px) {
+  html[lang="ca"] header h1 { font-size: clamp(23px, 6vw, 36px); overflow-wrap: anywhere; }
+  html[lang="ca"] .view-toggle-wrap { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 600px) {
+  html[lang="ca"] .party-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; }
+  html[lang="ca"] .party-info { min-width: 0; }
+  html[lang="ca"] .party-row .btn-group { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); width: 100%; }
+  html[lang="ca"] .party-row .vote-btn,
+  html[lang="ca"] .party-row .split-toggle-btn { min-width: 0; padding: 8px 3px; white-space: normal; line-height: 1.4; }
+  html[lang="ca"] .party-split-row { grid-column: 1 / -1; }
+}
