@@ -191,11 +191,13 @@
       const sw = $('.swatch', row);
       const col = sw && norm(getComputedStyle(sw).backgroundColor);
       if (!col) return;
+      const bgc = getComputedStyle(sw).backgroundColor.match(/[\d.]+/g);
+      document.dispatchEvent(new CustomEvent('v2:hover', { detail: bgc && !(bgc.length > 3 && +bgc[3] === 0) ? bgc.slice(0, 3).map(Number) : null }));
       let hit = 0;
       seatCircles().forEach(c => { const on = norm(c.getAttribute('fill')) === col; c.classList.toggle('lit', on); hit += on; });
       svg.classList.toggle('dimming', hit > 0);
     });
-    list.addEventListener('pointerleave', () => { svg.classList.remove('dimming'); $$('circle.lit', svg).forEach(c => c.classList.remove('lit')); });
+    list.addEventListener('pointerleave', () => { document.dispatchEvent(new CustomEvent('v2:hover', { detail: null })); svg.classList.remove('dimming'); $$('circle.lit', svg).forEach(c => c.classList.remove('lit')); });
   }
 
   /* ── 7. Seats: ripple outward from the changed seats ──── */
@@ -267,8 +269,8 @@
 
     const light = () => root.dataset.theme === 'light';
     const PAL = {
-      dark:  { accent: [139, 124, 255], yes: [52, 211, 153], no: [251, 95, 122] },
-      light: { accent: [91, 75, 240],   yes: [5, 150, 105],  no: [225, 29, 72] },
+      dark:  { accent: [139, 124, 255], yes: [52, 211, 153], no: [251, 95, 122], amber: [251, 191, 36], teal: [45, 212, 191], gray: [140, 140, 165], gold: [255, 215, 90] },
+      light: { accent: [91, 75, 240],   yes: [5, 150, 105],  no: [225, 29, 72],  amber: [217, 119, 6],  teal: [13, 148, 136], gray: [100, 100, 125], gold: [202, 138, 4] },
     };
     const mix = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
     let mood = PAL.dark.accent.slice(), moodWant = mood.slice(), moodStr = '', moodAt = 0;
@@ -296,16 +298,92 @@
     addEventListener('pointerdown', e => ring(e.clientX, e.clientY, e.target.closest && e.target.closest('.vote-btn') ? 1.4 : .7), { passive: true });
     new MutationObserver(() => wake(900)).observe(root, { attributes: true, attributeFilter: ['data-theme'] });
 
-    // Tally changes retarget the tint
+    /* Mood layers, highest priority last:
+       tally lean (purple -> green/red) -> abstentions mute it -> view-specific (coalition / US / Catalunya)
+       -> close vote (amber) -> quorum not met (amber). Hovering a party recolours the dots by the cursor. */
+    const pal = () => PAL[light() ? 'light' : 'dark'];
+    const parseRgb = c => {                                 // '#rrggbb' | 'rgb(r, g, b)' -> [r,g,b]
+      if (!c) return null;
+      c = c.trim();
+      if (c[0] === '#') { const h = c.length === 4 ? c.replace(/./g, (m, i) => i ? m + m : '') : c; return [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16)); }
+      const m = c.match(/[\d.]+/g); return m && m.length >= 3 ? m.slice(0, 3).map(Number) : null;
+    };
+    let hoverRgb = null;
+    const visibleWrap = id => { const w = document.getElementById(id); return w && w.classList.contains('visible') ? w : null; };
+    const ev = { closeNow: false, coalitionMajority: false, usLeader: '', us270: false, quorum: false };
+
+    // Leader of a candidate-card view (US elections / Catalunya): colour + score of the top card
+    function leaderOf(wrap) {
+      let best = null;
+      wrap.querySelectorAll('.candidate-card').forEach(card => {
+        const s = parseFloat(((card.querySelector('.candidate-score') || {}).textContent || '').replace(/[^\d.]/g, '')) || 0;
+        if (s > 0 && (!best || s > best.s)) best = { s, id: card.dataset.candidateCard || card.textContent.slice(0, 20), rgb: parseRgb(getComputedStyle(card).getPropertyValue('--party')) };
+      });
+      return best;
+    }
+
     function retarget() {
-      const pal = PAL[light() ? 'light' : 'dark'];
-      const y = target.yes, n = target.no, t = total(), decided = y + n;
+      const p = pal();
+      const y = target.yes, n = target.no, ab = target.abs, t = total(), decided = y + n;
       const lean = decided ? (y - n) / decided : 0;
       const amt = Math.min(1, decided / (t * .45));
-      moodWant = mix(pal.accent, lean >= 0 ? pal.yes : pal.no, Math.abs(lean) * amt * .9);
+      let m = mix(p.accent, lean >= 0 ? p.yes : p.no, Math.abs(lean) * amt * .9);
+
+      // many abstentions: wash the colour out
+      if (ab > decided && ab / t > .25) m = mix(m, p.gray, Math.min(.8, ab / t));
+
+      // coalition building: amber while short, teal once a majority is secured
+      const coal = visibleWrap('coalition-wrap'), cs = coal && $('#coalition-status');
+      if (cs) {
+        const major = cs.classList.contains('ready') || cs.classList.contains('super');
+        m = mix(m, major ? p.teal : p.amber, .8);
+        if (major !== ev.coalitionMajority) { if (major) ring(W / 2, H * .4, 2, p.teal); ev.coalitionMajority = major; }
+      } else ev.coalitionMajority = false;
+
+      // elections: lean toward whoever is ahead
+      const elec = visibleWrap('us-election-wrap') || visibleWrap('catalonia-election-wrap');
+      if (elec) {
+        const lead = leaderOf(elec);
+        if (lead && lead.rgb) {
+          m = mix(p.accent, lead.rgb, .85);
+          if (lead.id !== ev.usLeader) { if (ev.usLeader) ring(W / 2, H * .4, 1.6, lead.rgb); ev.usLeader = lead.id; }
+          if (lead.s >= 270 && !ev.us270) { ev.us270 = true; ring(W / 2, H * .4, 2.4, p.gold); }
+          if (lead.s < 270) ev.us270 = false;
+        } else { m = p.accent; ev.usLeader = ''; ev.us270 = false; }
+      } else { ev.usLeader = ''; ev.us270 = false; }
+
+      // razor-thin vote: amber, with one ring on entering the state
+      const close = !elec && decided > t * .3 && Math.abs(y - n) / decided < .03;
+      if (close) { m = mix(m, p.amber, .7); if (!ev.closeNow) ring(W / 2, H * .45, 1.6, p.amber); }
+      ev.closeNow = close;
+
+      // quorum not met
+      const qw = $('#quorum-warning');
+      const q = !!(qw && qw.classList.contains('visible'));
+      if (q) m = mix(m, p.amber, .85);
+      ev.quorum = q;
+
+      moodWant = m;
       wake(1800);
     }
     document.addEventListener('v2:tally', retarget);
+    document.addEventListener('v2:hover', e => { hoverRgb = e.detail; wake(1000); });
+    // views, quorum banner, coalition strength and election cards change outside the tally: watch them (throttled)
+    let retargetT = 0;
+    const retargetSoon = () => { if (!retargetT) retargetT = setTimeout(() => { retargetT = 0; retarget(); }, 350); };
+    ['coalition-wrap', 'us-election-wrap', 'catalonia-election-wrap', 'quorum-warning'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) new MutationObserver(retargetSoon).observe(el, { attributes: true, attributeFilter: ['class'] });
+    });
+    const csEl = $('#coalition-status');
+    if (csEl) new MutationObserver(retargetSoon).observe(csEl, { attributes: true, attributeFilter: ['class'] });
+    const watchElections = () => {
+      ['us-election-wrap', 'catalonia-election-wrap'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el && !el.dataset.v2watch) { el.dataset.v2watch = 1; new MutationObserver(() => { if (el.classList.contains('visible')) retargetSoon(); }).observe(el, { childList: true, subtree: true, characterData: true }); }
+      });
+    };
+    watchElections(); document.addEventListener('click', () => setTimeout(watchElections, 400), { passive: true });
 
     // Verdict flips fire a big ring from the middle of the screen in the verdict colour
     const verdict = $('#verdict');
@@ -350,32 +428,46 @@
         for (let gx = -GAP; gx < W + GAP; gx += GAP) {
           const x0 = gx + off;
           let x = x0, y = y0, r = 1.05, a = 0, glow = 0;
+          let col = null, colW = 0;
           const dx = x0 - px, dy = y0 - py, d2 = dx * dx + dy * dy;
           if (d2 < 52900) {
             const k = Math.exp(-d2 / 9000), d = Math.sqrt(d2) || 1;
             x += dx / d * k * 14; y += dy / d * k * 14; r += k * 2.4; a += k * .55; glow = k;
+            if (hoverRgb) { col = hoverRgb; colW = k; }   // hovering a party row: dots near the cursor take its colour
           }
           for (let q = 0; q < rings.length; q++) {
             const rg = rings[q], age = (now - rg.t0) / RING_MS, rad = age * 620 * (.6 + rg.s * .4);
             const rx = x0 - rg.x, ry = y0 - rg.y, rd = Math.sqrt(rx * rx + ry * ry), diff = rd - rad;
             if (diff > 90 || diff < -90) continue;
             const w = Math.exp(-diff * diff / 1600) * (1 - age) * rg.s;
-            if (w > .02) { r += w * 2.2; a += w * .5; glow = Math.max(glow, Math.min(1, w)); x += rx / (rd || 1) * w * 6; y += ry / (rd || 1) * w * 6; }
+            if (w > .02) {
+              r += w * 2.2; a += w * .5; glow = Math.max(glow, Math.min(1, w)); x += rx / (rd || 1) * w * 6; y += ry / (rd || 1) * w * 6;
+              if (rg.c && w > colW) { col = rg.c; colW = w; }   // event rings keep their own colour
+            }
           }
-          if (glow > .02) hot.push(x, y, r, a);
+          if (glow > .02) hot.push(x, y, r, a, col);
           else { g.moveTo(x + r, y); g.arc(x, y, r, 0, 6.2832); }
         }
       }
       g.fillStyle = isLight ? 'rgba(90,90,120,.17)' : 'rgba(190,190,220,.14)';
       g.fill();
       if (hot.length) {
-        for (let i = 0; i < hot.length; i += 4) {
-          g.fillStyle = `rgba(${mr},${mg},${mb},${Math.min(.9, .15 + hot[i + 3])})`;
+        for (let i = 0; i < hot.length; i += 5) {
+          const c = hot[i + 4], cr = c ? Math.round(c[0]) : mr, cg = c ? Math.round(c[1]) : mg, cb = c ? Math.round(c[2]) : mb;
+          g.fillStyle = `rgba(${cr},${cg},${cb},${Math.min(.9, .15 + hot[i + 3])})`;
           g.beginPath(); g.arc(hot[i], hot[i + 1], hot[i + 2], 0, 6.2832); g.fill();
         }
       }
     }
 
     resize();
+  })();
+
+  /* ── 9. Redesigned chamber charts (separate file, has its own Original/Redesigned toggle) ── */
+  (() => {
+    const me = document.currentScript && document.currentScript.src;
+    const s = document.createElement('script');
+    s.src = 'parliament-v2-chart.js' + (me && me.includes('?') ? me.slice(me.indexOf('?')) : '');
+    document.body.appendChild(s);
   })();
 })();

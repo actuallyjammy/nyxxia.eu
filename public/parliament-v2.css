@@ -685,6 +685,104 @@ body > #us-election-wrap { width: 100%; max-width: 1240px; }
 
 @media (max-width: 760px) { #us-election-wrap .candidate-card:hover { transform: none; } }
 
+
+/* ══════════════════════════════════════════════════════
+   REDESIGNED CHAMBER CHARTS (parliament-v2-chart.js)
+   ══════════════════════════════════════════════════════ */
+:root { --seat-empty: rgba(255,255,255,.10); }
+[data-theme="light"] { --seat-empty: rgba(20,20,50,.12); }
+
+.parliament-wrap > .pv2 { display: none; }
+.parliament-wrap.chart-v2 > .pv2 { display: block; }
+.parliament-wrap.chart-v2 > #parl-svg { display: none; }
+
+.pv2 {
+  position: relative; background: var(--pane); border: 1px solid var(--border); border-radius: 22px;
+  padding: 22px 22px 14px; box-shadow: var(--shadow); isolation: isolate;
+}
+.pv2-svg { width: 100%; height: auto; display: block; overflow: visible; user-select: none; }
+
+/* seats */
+.pv2 .seat {
+  stroke-width: 2; cursor: pointer; transform-box: fill-box; transform-origin: center;
+  transition: fill .55s var(--ease-out) var(--td, 0ms), stroke .55s var(--ease-out) var(--td, 0ms), opacity .25s, transform .35s var(--ease-spring);
+}
+.pv2 .seat[data-v="yes"]  { --vc: var(--yes); }
+.pv2 .seat[data-v="no"]   { --vc: var(--no); }
+.pv2 .seat[data-v="abs"]  { --vc: var(--abs); }
+.pv2 .seat[data-v="none"] { --vc: var(--seat-empty); }
+.pv2[data-color="party"] .seat { fill: var(--pc); stroke: var(--vc); }
+.pv2[data-color="party"] .seat[data-v="none"] { stroke: transparent; }
+.pv2[data-color="vote"] .seat { fill: var(--vc); stroke: var(--pc); stroke-width: 1.8; }
+.pv2 .seat:hover { transform: scale(1.4); }
+.pv2.dimming .seat { opacity: .16; }
+.pv2.dimming .seat.lit { opacity: 1; transform: scale(1.18); }
+.pv2 .seat.in { animation: pv2In .55s var(--ease-spring) backwards; animation-delay: var(--ad, 0ms); }
+@keyframes pv2In { from { opacity: 0; transform: scale(.1); } }
+
+/* hemicycle furniture */
+.pv2-track { fill: none; stroke: var(--field); stroke-width: 7; stroke-linecap: round; }
+.pv2-prog { fill: none; stroke-width: 7; stroke-linecap: round; transition: stroke-dasharray .8s var(--ease-out), stroke-dashoffset .8s var(--ease-out); stroke-dasharray: 0 1.001; }
+.pv2-prog.yes { stroke: var(--yes); filter: drop-shadow(0 0 6px color-mix(in srgb, var(--yes) 60%, transparent)); }
+.pv2-prog.no  { stroke: var(--no);  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--no) 60%, transparent)); }
+.pv2-maj { stroke: var(--text); stroke-width: 1.5; stroke-dasharray: 3 5; opacity: .55; transition: opacity .3s, stroke .3s; }
+.pv2-maj.reached { opacity: 1; stroke: var(--win-gold); stroke-dasharray: none; }
+.pv2-maj-label { font: 600 13px var(--font-mono); fill: var(--muted); }
+.pv2-big { font: 700 64px var(--font-display); letter-spacing: -.05em; fill: var(--text); font-variant-numeric: tabular-nums; }
+.pv2-sub { font: 500 13px var(--font-mono); fill: var(--muted); }
+.pv2-need { font: 600 15px var(--font-display); fill: var(--text); opacity: .8; }
+
+/* westminster furniture */
+.pv2-bench { fill: var(--field); stroke: var(--border); stroke-width: 1; }
+.pv2-bench-label { font: 600 14px var(--font-display); fill: var(--text); letter-spacing: -.01em; }
+.pv2-floor { fill: none; stroke: var(--border); stroke-dasharray: 2 7; stroke-linecap: round; stroke-width: 2; }
+.pv2-speaker { fill: var(--field); stroke: var(--border-hi); stroke-width: 1.5; }
+
+/* legend */
+.pv2-legend { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; padding: 14px 0 6px; }
+.pv2-chip {
+  display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px 6px 10px; border-radius: 999px;
+  background: var(--field); border: 1px solid var(--border); color: var(--text); font: 600 12px var(--font-display);
+  transition: transform .35s var(--ease-spring), border-color .2s, background-color .2s;
+}
+.pv2-chip i { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.pv2-chip b { font: 500 11px var(--font-mono); color: var(--muted); }
+.pv2-chip:hover, .pv2-chip.lit { transform: translateY(-2px); border-color: var(--border-hi); background: var(--card-solid); }
+
+/* tooltip */
+.pv2-tip {
+  position: absolute; left: 0; top: 0; z-index: 5; pointer-events: none; display: flex; align-items: center; gap: 10px;
+  padding: 9px 12px; border-radius: 12px; background: color-mix(in srgb, var(--card-solid) 94%, transparent);
+  border: 1px solid var(--border-hi); box-shadow: 0 18px 36px -14px rgba(0,0,0,.7); white-space: nowrap; font-family: var(--font-display);
+}
+.pv2-tip[hidden] { display: none; }
+.pv2-tip i { width: 12px; height: 12px; border-radius: 50%; flex: none; }
+.pv2-tip b { display: block; font-size: 13px; letter-spacing: -.01em; }
+.pv2-tip span { font: 500 11px var(--font-mono); color: var(--muted); }
+.pv2-tip em { font-style: normal; font: 600 11px var(--font-display); padding: 3px 9px; border-radius: 999px; background: var(--field); color: var(--muted); }
+.pv2-tip em[data-v="yes"] { background: color-mix(in srgb, var(--yes) 18%, transparent); color: var(--yes); }
+.pv2-tip em[data-v="no"]  { background: color-mix(in srgb, var(--no) 18%, transparent); color: var(--no); }
+
+
+/* majority marker: dark long-dash core over a light halo, so it reads over any dot colour */
+.pv2-maj-halo { stroke: rgba(255,255,255,.26); stroke-width: 5; stroke-linecap: round; transition: stroke .3s; }
+.pv2-maj { stroke: #0a0a12; stroke-width: 2.6; stroke-dasharray: 16 4; stroke-linecap: butt; opacity: .95; transition: stroke .3s; }
+[data-theme="light"] .pv2-maj-halo { stroke: rgba(255,255,255,.8); }
+.pv2-maj-halo.reached { stroke: var(--win-gold); }
+.pv2-maj.reached { stroke: #0a0a12; opacity: 1; stroke-dasharray: none; }
+.parliament-toggle-group[hidden] { display: none; }
+
+/* US chamber (House / Senate) */
+.pv2-us { margin: 4px 0 6px; padding: 18px 6px 2px; background: transparent; border: 0; box-shadow: none; border-radius: 0; }
+.pv2-us .seat { fill: var(--pc); stroke: transparent; }
+.pv2-us .seat[data-u="1"] { fill: var(--seat-empty); }
+.pv2-prog.lead { stroke: var(--lead, var(--accent)); filter: drop-shadow(0 0 6px color-mix(in srgb, var(--lead, var(--accent)) 55%, transparent)); transition: stroke-dasharray .8s var(--ease-out), stroke .5s; }
+
+@media (max-width: 640px) {
+  .pv2 { padding: 14px 8px 8px; border-radius: 16px; }
+  .pv2-big { font-size: 56px; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
   .rv { opacity: 1; transform: none; }

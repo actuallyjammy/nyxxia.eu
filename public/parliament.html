@@ -1547,7 +1547,7 @@
     // v2 design toggle (see the "v2" button bottom-right). Loaded last so it can override the themes above.
     var PARLIAMENT_V2 = false;
     try { PARLIAMENT_V2 = localStorage.getItem('parliament_v2') === '1'; } catch (e) {}
-    if (PARLIAMENT_V2) document.write('<link rel="stylesheet" href="parliament-v2.css?v=20261102" />');
+    if (PARLIAMENT_V2) document.write('<link rel="stylesheet" href="parliament-v2.css?v=20261103" />');
   </script>
 </head>
 <body>
@@ -6577,7 +6577,7 @@
       localStorage.setItem('parliament_style', 'parliament-new.css');
       document.getElementById('sw-v2').classList.add('active');
       document.getElementById('sw-new').classList.remove('active');
-      document.write('<script src="parliament-v2.js?v=20261102"><\/script>');
+      document.write('<script src="parliament-v2.js?v=20261103"><\/script>');
     }
     // Restore preference
     const savedStyle = localStorage.getItem('parliament_style');
