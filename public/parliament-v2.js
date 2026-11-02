@@ -9,7 +9,7 @@
   const root = document.documentElement;
 
   /* ── 1. Pointer: card spotlight + aurora lean ───────── */
-  const GLASS = '.glass,.wiki-wrap,.editor-wrap,.persist-wrap,.history-wrap,.motion-box,.stats,.parties,.coalition-panel,.analysis-panel';
+  const GLASS = '.glass,.wiki-wrap,.editor-wrap,.persist-wrap,.history-wrap,.motion-box,.stats,.parties,.coalition-panel,.analysis-panel,#us-election-wrap .election-topbar,#us-election-wrap .candidate-card,#us-election-wrap .count-line-card,#us-election-wrap .chamber-card,#us-election-wrap .government-card,#us-election-wrap .simple-controls,#us-election-wrap .real-map-card,#us-election-wrap .race-card,#us-election-wrap .party-drawer';
   let pf = 0;
   addEventListener('pointermove', e => {
     if (pf) return;
@@ -93,6 +93,7 @@
     dock.style.setProperty('--maj', ((Math.floor(t / 2) + 1) / t) * 100 + '%');
     $('.y b', dock).textContent = target.yes;
     $('.n b', dock).textContent = target.no;
+    document.dispatchEvent(new Event('v2:tally'));
     const vEl = $('#verdict'), v = $('.v', dock);
     if (vEl) {
       const pass = vEl.classList.contains('passed'), fail = vEl.classList.contains('failed');
@@ -241,4 +242,140 @@
     });
     svg.addEventListener('pointerout', e => { if (e.target.classList) e.target.classList.remove('seat-hover'); });
   }
+
+  /* ── 8. Reactive background ────────────────────────────
+     A dot field that bends away from the pointer, ripples on clicks / votes,
+     drifts with scroll, and tints toward the tally (green = yea, red = nay).
+     Performance: the loop only runs while something is happening (pointer, scroll,
+     a ripple, or the tint easing) and sleeps otherwise; unaffected dots are drawn
+     as one batched path; the --mood CSS variable is written sparingly. */
+  (() => {
+    if (reduce) return;
+    const cvs = document.createElement('canvas');
+    cvs.id = 'bg-canvas';
+    document.body.prepend(cvs);
+    const g = cvs.getContext('2d', { alpha: true });
+    let W = 0, H = 0;
+    const GAP = 38, RING_MS = 1900;
+    const resize = () => {
+      const dpr = Math.min(1.5, devicePixelRatio || 1);
+      W = innerWidth; H = innerHeight;
+      cvs.width = Math.round(W * dpr); cvs.height = Math.round(H * dpr);
+      g.setTransform(dpr, 0, 0, dpr, 0, 0);
+      wake(200);
+    };
+
+    const light = () => root.dataset.theme === 'light';
+    const PAL = {
+      dark:  { accent: [139, 124, 255], yes: [52, 211, 153], no: [251, 95, 122] },
+      light: { accent: [91, 75, 240],   yes: [5, 150, 105],  no: [225, 29, 72] },
+    };
+    const mix = (a, b, t) => a.map((v, i) => v + (b[i] - v) * t);
+    let mood = PAL.dark.accent.slice(), moodWant = mood.slice(), moodStr = '', moodAt = 0;
+
+    const ptr = { x: 0, y: 0, tx: 0, ty: 0, on: false };
+    const rings = [];
+    const ring = (x, y, strength = 1, color = null) => {
+      rings.push({ x, y, t0: performance.now(), s: strength, c: color });
+      if (rings.length > 6) rings.shift();
+      wake(RING_MS + 100);
+    };
+
+    /* wake / sleep */
+    let awakeUntil = 0, running = false, visible = true;
+    function wake(ms) {
+      awakeUntil = Math.max(awakeUntil, performance.now() + ms);
+      if (!running && visible) { running = true; requestAnimationFrame(frame); }
+    }
+    document.addEventListener('visibilitychange', () => { visible = !document.hidden; if (visible) wake(300); });
+
+    addEventListener('pointermove', e => { ptr.tx = e.clientX; ptr.ty = e.clientY; if (!ptr.on) { ptr.x = ptr.tx; ptr.y = ptr.ty; } ptr.on = true; wake(1000); }, { passive: true });
+    document.addEventListener('pointerleave', () => { ptr.on = false; wake(400); });
+    addEventListener('scroll', () => wake(300), { passive: true });
+    addEventListener('resize', resize);
+    addEventListener('pointerdown', e => ring(e.clientX, e.clientY, e.target.closest && e.target.closest('.vote-btn') ? 1.4 : .7), { passive: true });
+    new MutationObserver(() => wake(900)).observe(root, { attributes: true, attributeFilter: ['data-theme'] });
+
+    // Tally changes retarget the tint
+    function retarget() {
+      const pal = PAL[light() ? 'light' : 'dark'];
+      const y = target.yes, n = target.no, t = total(), decided = y + n;
+      const lean = decided ? (y - n) / decided : 0;
+      const amt = Math.min(1, decided / (t * .45));
+      moodWant = mix(pal.accent, lean >= 0 ? pal.yes : pal.no, Math.abs(lean) * amt * .9);
+      wake(1800);
+    }
+    document.addEventListener('v2:tally', retarget);
+
+    // Verdict flips fire a big ring from the middle of the screen in the verdict colour
+    const verdict = $('#verdict');
+    if (verdict) {
+      let last = '';
+      new MutationObserver(() => {
+        const st = verdict.classList.contains('passed') ? 'yes' : verdict.classList.contains('failed') ? 'no' : '';
+        if (st && st !== last) ring(W / 2, H * .45, 2.2, PAL[light() ? 'light' : 'dark'][st]);
+        last = st;
+      }).observe(verdict, { attributes: true, attributeFilter: ['class'] });
+    }
+
+    function frame(now) {
+      if (!visible) { running = false; return; }
+      mood = mix(mood, moodWant, .05);
+      ptr.x += (ptr.tx - ptr.x) * .16; ptr.y += (ptr.ty - ptr.y) * .16;
+      draw(now);
+
+      // the tint drives the CSS aurora too; restyling is costly, so cap to ~8/s and skip no-op writes
+      if (now - moodAt > 120) {
+        const s = mood.map(Math.round).join(',');
+        if (s !== moodStr) { moodStr = s; root.style.setProperty('--mood', s); }
+        moodAt = now;
+      }
+      const settling = mood.some((v, i) => Math.abs(v - moodWant[i]) > .5) || rings.length || ptr.on && Math.hypot(ptr.tx - ptr.x, ptr.ty - ptr.y) > .5;
+      if (now < awakeUntil || settling) requestAnimationFrame(frame);
+      else running = false;
+    }
+
+    function draw(now) {
+      g.clearRect(0, 0, W, H);
+      const isLight = light();
+      const oy = (scrollY * .18) % GAP;
+      const [mr, mg, mb] = mood.map(Math.round);
+      for (let i = rings.length - 1; i >= 0; i--) if (now - rings[i].t0 >= RING_MS) rings.splice(i, 1);
+      const px = ptr.on ? ptr.x : -1e4, py = ptr.on ? ptr.y : -1e4;
+
+      const hot = [];                                   // dots touched by the pointer or a ring: drawn individually
+      g.beginPath();                                    // everything else: one batched path
+      for (let gy = -GAP, row = 0; gy < H + GAP; gy += GAP, row++) {
+        const y0 = gy - oy, off = row & 1 ? GAP / 2 : 0;
+        for (let gx = -GAP; gx < W + GAP; gx += GAP) {
+          const x0 = gx + off;
+          let x = x0, y = y0, r = 1.05, a = 0, glow = 0;
+          const dx = x0 - px, dy = y0 - py, d2 = dx * dx + dy * dy;
+          if (d2 < 52900) {
+            const k = Math.exp(-d2 / 9000), d = Math.sqrt(d2) || 1;
+            x += dx / d * k * 14; y += dy / d * k * 14; r += k * 2.4; a += k * .55; glow = k;
+          }
+          for (let q = 0; q < rings.length; q++) {
+            const rg = rings[q], age = (now - rg.t0) / RING_MS, rad = age * 620 * (.6 + rg.s * .4);
+            const rx = x0 - rg.x, ry = y0 - rg.y, rd = Math.sqrt(rx * rx + ry * ry), diff = rd - rad;
+            if (diff > 90 || diff < -90) continue;
+            const w = Math.exp(-diff * diff / 1600) * (1 - age) * rg.s;
+            if (w > .02) { r += w * 2.2; a += w * .5; glow = Math.max(glow, Math.min(1, w)); x += rx / (rd || 1) * w * 6; y += ry / (rd || 1) * w * 6; }
+          }
+          if (glow > .02) hot.push(x, y, r, a);
+          else { g.moveTo(x + r, y); g.arc(x, y, r, 0, 6.2832); }
+        }
+      }
+      g.fillStyle = isLight ? 'rgba(90,90,120,.17)' : 'rgba(190,190,220,.14)';
+      g.fill();
+      if (hot.length) {
+        for (let i = 0; i < hot.length; i += 4) {
+          g.fillStyle = `rgba(${mr},${mg},${mb},${Math.min(.9, .15 + hot[i + 3])})`;
+          g.beginPath(); g.arc(hot[i], hot[i + 1], hot[i + 2], 0, 6.2832); g.fill();
+        }
+      }
+    }
+
+    resize();
+  })();
 })();

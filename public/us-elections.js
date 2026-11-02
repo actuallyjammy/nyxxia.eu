@@ -3,6 +3,62 @@
 
   const LS_KEY = 'us_election_lab_simple_v2';
   const REPORTING_KEY = LS_KEY + '_reporting';
+  /* Portraits are large base64 images. Keeping them inline meant every small edit rewrote the whole
+     state (~190 KB). They are now stored once, by content hash, under their own keys and referenced
+     from the state as "@img:<hash>". Unreferenced images are cleaned up after a save. */
+  const IMG_PREFIX = LS_KEY + '_img_';
+  const IMG_REF = '@img:';
+  const IMG_MIN_LENGTH = 1500;
+  const imageRefCache = new Map();      // data URL -> ref (string hashing is cached by the engine)
+  const imageStoredRefs = new Set();    // refs known to exist in localStorage
+  let lastImageRefs = '';
+
+  function hashDataUrl(value) {
+    let h1 = 0x811c9dc5, h2 = 0x1b873593;
+    for (let i = 0; i < value.length; i++) {
+      const c = value.charCodeAt(i);
+      h1 = Math.imul(h1 ^ c, 16777619);
+      h2 = Math.imul(h2 ^ c, 2246822519) + i | 0;
+    }
+    return (h1 >>> 0).toString(36) + (h2 >>> 0).toString(36) + value.length.toString(36);
+  }
+
+  // JSON.stringify replacer: swap large data: URLs for references, writing each image only once.
+  function externalizeImages(_key, value) {
+    if (typeof value !== 'string' || value.length < IMG_MIN_LENGTH || !value.startsWith('data:')) return value;
+    let ref = imageRefCache.get(value);
+    if (!ref) { ref = IMG_REF + hashDataUrl(value); imageRefCache.set(value, ref); }
+    if (!imageStoredRefs.has(ref)) {
+      try {
+        if (localStorage.getItem(IMG_PREFIX + ref) === null) localStorage.setItem(IMG_PREFIX + ref, value);
+        imageStoredRefs.add(ref);
+      } catch (e) { return value; }     // quota: keep it inline rather than lose the picture
+    }
+    usedImageRefs.add(ref);
+    return ref;
+  }
+  let usedImageRefs = new Set();
+
+  // JSON.parse reviver: resolve references back to the image data ('' if missing, so it re-fetches by name).
+  function internalizeImages(_key, value) {
+    if (typeof value !== 'string' || !value.startsWith(IMG_REF)) return value;
+    const stored = localStorage.getItem(IMG_PREFIX + value);
+    if (stored !== null) { imageStoredRefs.add(value); imageRefCache.set(stored, value); }
+    return stored === null ? '' : stored;
+  }
+
+  function collectUnusedImages(used) {
+    const key = [...used].sort().join(',');
+    if (key === lastImageRefs) return;
+    lastImageRefs = key;
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith(IMG_PREFIX) && !used.has(k.slice(IMG_PREFIX.length))) {
+        localStorage.removeItem(k);
+        imageStoredRefs.delete(k.slice(IMG_PREFIX.length));
+      }
+    }
+  }
   const CUSTOM_HOUSE_MAPS_KEY = 'us_election_custom_house_maps_v2';
   const CUSTOM_MAP_DB = 'us_election_assets_v1';
   const CUSTOM_MAP_STORE = 'houseMaps';
@@ -634,7 +690,7 @@
     try {
       const saved = localStorage.getItem(LS_KEY);
       if (saved) {
-        const state = normalizeState(JSON.parse(saved));
+        const state = normalizeState(JSON.parse(saved, internalizeImages));
         // Legacy saves keep reporting in settings; newer saves checkpoint it separately.
         const reporting = localStorage.getItem(REPORTING_KEY);
         if (reporting !== null && Number.isFinite(Number(reporting))) {
@@ -657,14 +713,16 @@
     try {
       // Reporting changes every second. Do not rewrite portraits, custom maps,
       // parties and scenarios for each tick of the counter.
+      usedImageRefs = new Set();
       const content = JSON.stringify({
         ...app, settings: { ...app.settings, reporting: undefined }
-      });
+      }, externalizeImages);
       if (content !== lastSavedContent) {
         // Retain reporting here too so older versions can still read this save.
-        const snapshot = JSON.stringify(app);
+        const snapshot = JSON.stringify(app, externalizeImages);
         if (localStorage.getItem(LS_KEY) !== snapshot) localStorage.setItem(LS_KEY, snapshot);
         lastSavedContent = content;
+        collectUnusedImages(usedImageRefs);
       }
       const reporting = String(app.settings.reporting);
       if (localStorage.getItem(REPORTING_KEY) !== reporting) {
@@ -7550,7 +7608,7 @@
       const img = new Image();
       img.onerror = reject;
       img.onload = () => {
-        const maxSize = 520;
+        const maxSize = 400;
         const scale = Math.min(1, maxSize / Math.max(img.width || maxSize, img.height || maxSize));
         const width = Math.max(1, Math.round((img.width || maxSize) * scale));
         const height = Math.max(1, Math.round((img.height || maxSize) * scale));
@@ -7563,7 +7621,7 @@
           return;
         }
         ctx.drawImage(img, 0, 0, width, height);
-        resolve(canvas.toDataURL('image/jpeg', 0.84));
+        resolve(canvas.toDataURL('image/jpeg', 0.8));
       };
       img.src = dataUrl;
     });
