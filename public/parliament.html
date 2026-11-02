@@ -1543,6 +1543,12 @@
   </style>
   <link rel="stylesheet" href="us-proportional.css?v=20261019-senate150-header11" />
   <link rel="stylesheet" href="parliament-i18n.css?v=20261024-ca3">
+  <script>
+    // v2 design toggle (see the "v2" button bottom-right). Loaded last so it can override the themes above.
+    var PARLIAMENT_V2 = false;
+    try { PARLIAMENT_V2 = localStorage.getItem('parliament_v2') === '1'; } catch (e) {}
+    if (PARLIAMENT_V2) document.write('<link rel="stylesheet" href="parliament-v2.css" />');
+  </script>
 </head>
 <body>
 
@@ -6549,15 +6555,29 @@
     <button class="style-sw-btn" id="sw-classic" onclick="switchStyle('parliament.css', this)">Classic</button>
     <div class="style-sw-sep"></div>
     <button class="style-sw-btn active" id="sw-new" onclick="switchStyle('parliament-new.css', this)">New</button>
+    <div class="style-sw-sep"></div>
+    <button class="style-sw-btn" id="sw-v2" onclick="toggleV2()">v2</button>
   </div>
   <script>
     const NEW_STYLESHEET = 'parliament-new.css?v=20260816-model2';
+    function toggleV2() {
+      try { localStorage.setItem('parliament_v2', PARLIAMENT_V2 ? '0' : '1'); } catch (e) {}
+      location.reload();
+    }
     function switchStyle(css, btn) {
+      // v2 layers on top of "New"; picking Classic/New leaves v2 mode
+      if (PARLIAMENT_V2) { try { localStorage.setItem('parliament_v2', '0'); } catch (e) {} localStorage.setItem('parliament_style', String(css).split('?')[0]); location.reload(); return; }
       const canonical = String(css || '').split('?')[0];
       document.getElementById('theme-css').href = canonical === 'parliament-new.css' ? NEW_STYLESHEET : css;
       document.querySelectorAll('.style-sw-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       localStorage.setItem('parliament_style', canonical);
+    }
+    if (PARLIAMENT_V2) {
+      localStorage.setItem('parliament_style', 'parliament-new.css');
+      document.getElementById('sw-v2').classList.add('active');
+      document.getElementById('sw-new').classList.remove('active');
+      document.write('<script src="parliament-v2.js"><\/script>');
     }
     // Restore preference
     const savedStyle = localStorage.getItem('parliament_style');
@@ -6571,6 +6591,7 @@
     } else if (savedStyle && savedStyle !== 'parliament-new.css') {
       localStorage.setItem('parliament_style', 'parliament-new.css');
     }
+    if (PARLIAMENT_V2) document.getElementById('sw-new').classList.remove('active');
   </script>
   <script src="parliament-i18n.js?v=20261024-ca3"></script>
 </body>
