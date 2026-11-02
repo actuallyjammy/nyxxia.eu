@@ -15,6 +15,9 @@
   const KEY = 'parliament_v2_chart';
   let style = 'new';
   try { if (localStorage.getItem(KEY) === 'classic') style = 'classic'; } catch (e) {}
+  const ORDER_KEY = 'parliament_v2_order';
+  let orderMode = 'vote';                       // 'vote': yea blocks left, nay blocks right | 'party': fixed party order
+  try { if (localStorage.getItem(ORDER_KEY) === 'party') orderMode = 'party'; } catch (e) {}
 
   /* ── DOM ───────────────────────────────────────────── */
   const box = document.createElement('div');
@@ -30,6 +33,12 @@
   group.setAttribute('aria-label', 'Chart style');
   group.innerHTML = '<button class="parliament-toggle" type="button" data-chart-style="new">Redesigned</button><button class="parliament-toggle" type="button" data-chart-style="classic">Original</button>';
   toolbar.appendChild(group);
+
+  const orderGroup = document.createElement('div');
+  orderGroup.className = 'parliament-toggle-group';
+  orderGroup.setAttribute('aria-label', 'Seat order');
+  orderGroup.innerHTML = '<button class="parliament-toggle" type="button" data-order="vote" title="Parties voting yea move left, nay right">By vote</button><button class="parliament-toggle" type="button" data-order="party" title="Keep every party in its fixed place">By party</button>';
+  toolbar.appendChild(orderGroup);
 
   const el = (tag, attrs = {}, text) => {
     const n = document.createElementNS(NS, tag);
@@ -124,27 +133,34 @@
   }
 
   /* ── Build (only when the seat layout changes) ─────── */
-  let sig = '', model = null;
+  let sig = '', model = null, fresh = false;
 
   function build(layout, seated, groups, total, majority) {
     svg.textContent = '';
+    fresh = true;
     const N = Math.min(total, DOT_CAP), k = total / N;
     const byParty = new Map();
 
     const dotsLayer = el('g', { class: 'pv2-dots' });
+    const all = [];                       // every seat dot, in party order
     const mkSeat = (s, p, i, dot) => {
-      const c = el('circle', { class: 'seat', cx: s.x.toFixed(1), cy: s.y.toFixed(1), r: dot.toFixed(1), 'data-p': p.id, 'data-v': 'none' });
+      const slot = el('g', { class: 'slot' });
+      slot.style.transform = `translate(${s.x.toFixed(1)}px, ${s.y.toFixed(1)}px)`;
+      const c = el('circle', { class: 'seat', cx: 0, cy: 0, r: dot.toFixed(1), 'data-p': p.id, 'data-v': 'none' });
+      c._slot = i;
       c.style.setProperty('--pc', p.color);
       c.style.setProperty('--ad', Math.min(700, i * 1.4).toFixed(0) + 'ms');
       c.style.setProperty('--td', Math.max(0, Math.min(380, s.x * .38)).toFixed(0) + 'ms');
       if (!reduce) c.classList.add('in');
-      dotsLayer.appendChild(c);
+      slot.appendChild(c);
+      dotsLayer.appendChild(slot);
+      all.push(c);
       if (!byParty.has(p.id)) byParty.set(p.id, []);
       byParty.get(p.id).push(c);
       return c;
     };
 
-    const info = { layout, total, majority, N, k, parties: new Map(), byParty };
+    const info = { layout, total, majority, N, k, parties: new Map(), byParty, all, ticks: [] };
 
     if (layout === 'hemicycle') {
       svg.setAttribute('viewBox', '0 0 1000 520');
@@ -164,21 +180,30 @@
         info.parties.set(p.id, { p, count: counts[i] });
         for (let j = 0; j < counts[i]; j++) { mkSeat(geo.seats[idx], p, idx, geo.dot); idx++; }
       });
-      // majority tick on the track + radial marker through the dots
-      const mi = Math.min(N - 1, Math.max(0, Math.ceil(majority / total * N) - 1));
-      const th = (geo.seats[mi].th + (geo.seats[Math.min(N - 1, mi + 1)].th)) / 2;
-      const mx = f => ({ x: geo.cx + f * Math.cos(th), y: geo.cy - f * Math.sin(th) });
-      const a = mx(geo.r0 - 6), b = mx(trackR + 12), lab = mx(trackR + 30);
-      svg.appendChild(el('line', { x1: a.x, y1: a.y, x2: b.x, y2: b.y, class: 'pv2-maj-halo' }));
-      svg.appendChild(el('line', { x1: a.x, y1: a.y, x2: b.x, y2: b.y, class: 'pv2-maj' }));
-      svg.appendChild(el('text', { x: lab.x, y: lab.y + 4, class: 'pv2-maj-label', 'text-anchor': 'middle' }, majority));
+      // majority markers. Yea blocks fill from the left, so the tick sits where m seats from the left end;
+      // nays fill from the right, so they cross at m seats in from the right. They almost coincide for a simple
+      // majority (one merged tick); a supermajority separates them (two ticks).
+      const m = Math.min(N, Math.max(1, Math.ceil(majority / total * N)));
+      const thAt = q => (geo.seats[Math.min(N - 1, Math.max(0, q))].th + geo.seats[Math.min(N - 1, Math.max(0, q + 1))].th) / 2;
+      const mkTick = (th, side, alt) => {
+        const mx = f => ({ x: geo.cx + f * Math.cos(th), y: geo.cy - f * Math.sin(th) });
+        const a = mx(geo.r0 - 6), b = mx(trackR + 12), lab = mx(trackR + 30);
+        const cls = alt ? ' alt' : '';
+        const halo = el('line', { x1: a.x, y1: a.y, x2: b.x, y2: b.y, class: 'pv2-maj-halo' + cls });
+        const core = el('line', { x1: a.x, y1: a.y, x2: b.x, y2: b.y, class: 'pv2-maj' + cls });
+        const label = el('text', { x: lab.x, y: lab.y + 4, class: 'pv2-maj-label', 'text-anchor': 'middle' }, majority);
+        svg.append(halo, core, label);
+        info.ticks.push({ side, els: [halo, core] });
+      };
+      if (Math.abs((N - m - 1) - (m - 1)) <= 3) mkTick(thAt(m - 1), 'both', false);
+      else { mkTick(thAt(m - 1), 'yes', false); mkTick(thAt(N - m - 1), 'no', true); }
       // centre readout
       const t = el('g', { class: 'pv2-centre' });
       t.appendChild(el('text', { x: geo.cx, y: geo.cy - 52, class: 'pv2-big', 'text-anchor': 'middle' }, total));
       t.appendChild(el('text', { x: geo.cx, y: geo.cy - 28, class: 'pv2-sub', 'text-anchor': 'middle' }, k > 1.001 ? `seats · 1 dot ≈ ${k.toFixed(1)}` : 'seats'));
       t.appendChild(el('text', { x: geo.cx, y: geo.cy - 6, class: 'pv2-need', 'text-anchor': 'middle' }, `${majority} to pass`));
       svg.appendChild(t);
-      info.geo = geo; info.maj = { th };
+      info.geo = geo;
     } else {
       svg.setAttribute('viewBox', '0 0 1000 600');
       const gl = ['government', 'opposition', 'crossbench'].map(g => ({ g, list: [...groups[g]] }));
@@ -230,6 +255,25 @@
   }
 
   /* ── Paint (every state change) ────────────────────── */
+  // Put every dot in a slot. By vote: yea dots take the leftmost slots, nay dots the rightmost, and
+  // abstentions / not-yet-voted fill the middle in party order (so with no votes it matches party order).
+  function place() {
+    if (!model || model.layout !== 'hemicycle') return;
+    const { all, geo, N } = model;
+    let order = all;
+    if (orderMode === 'vote') {
+      const rank = c => c.dataset.v === 'yes' ? 0 : c.dataset.v === 'no' ? 2 : 1;
+      order = all.map((c, i) => [c, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(x => x[0]);
+    }
+    order.forEach((c, i) => {
+      if (c._slot === i) return;
+      c._slot = i;
+      const s = geo.seats[i], g = c.parentNode;
+      g.style.setProperty('--md', Math.round(i / N * 300) + 'ms');
+      g.style.transform = `translate(${s.x.toFixed(1)}px, ${s.y.toFixed(1)}px)`;
+    });
+  }
+
   function paint() {
     if (!model) return;
     const { total, majority } = model;
@@ -250,7 +294,15 @@
       pn.style.strokeDasharray = `${fn} ${1 - fn + .001}`;
       pn.style.strokeDashoffset = `${-(1 - fn)}`;
     }
-    svg.querySelectorAll('.pv2-maj, .pv2-maj-halo').forEach(m => m.classList.toggle('reached', yes >= majority || no >= majority));
+    (model.ticks || []).forEach(t => {
+      const reached = t.side === 'yes' ? yes >= majority : t.side === 'no' ? no >= majority : (yes >= majority || no >= majority);
+      t.els.forEach(e => e.classList.toggle('reached', reached));
+    });
+    if (fresh) {
+      svg.classList.add('noanim'); place();
+      requestAnimationFrame(() => requestAnimationFrame(() => svg.classList.remove('noanim')));
+      fresh = false;
+    } else place();
   }
 
   let raf = 0;
@@ -270,6 +322,7 @@
       const useNew = layout === 'hemicycle' || style === 'new';
       wrap.classList.toggle('chart-v2', useNew);
       group.hidden = layout === 'hemicycle';
+      orderGroup.hidden = layout !== 'hemicycle';
       if (!useNew) return;
       box.dataset.color = parliamentColorMode === 'vote' ? 'vote' : 'party';
       box.dataset.layout = layout;
@@ -291,6 +344,15 @@
     sig = ''; render();
   }
   group.addEventListener('click', e => { const b = e.target.closest('[data-chart-style]'); if (b) setStyle(b.dataset.chartStyle); });
+
+  function setOrder(next) {
+    orderMode = next;
+    try { localStorage.setItem(ORDER_KEY, orderMode); } catch (e) {}
+    orderGroup.querySelectorAll('[data-order]').forEach(b => b.classList.toggle('active', b.dataset.order === orderMode));
+    place();
+  }
+  orderGroup.addEventListener('click', e => { const b = e.target.closest('[data-order]'); if (b) setOrder(b.dataset.order); });
+  orderGroup.querySelectorAll('[data-order]').forEach(b => b.classList.toggle('active', b.dataset.order === orderMode));
 
   // The original redraws on every change; use that as the trigger
   new MutationObserver(render).observe(oldSvg, { childList: true });

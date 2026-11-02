@@ -778,6 +778,13 @@ body > #us-election-wrap { width: 100%; max-width: 1240px; }
 .pv2-us .seat[data-u="1"] { fill: var(--seat-empty); }
 .pv2-prog.lead { stroke: var(--lead, var(--accent)); filter: drop-shadow(0 0 6px color-mix(in srgb, var(--lead, var(--accent)) 55%, transparent)); transition: stroke-dasharray .8s var(--ease-out), stroke .5s; }
 
+
+/* seats glide to their slot when votes re-order the chamber */
+.pv2 .slot { transition: transform 1s cubic-bezier(.3, 1.2, .5, 1) var(--md, 0ms); }
+.pv2-svg.noanim .slot { transition: none !important; }
+.pv2-maj.alt, .pv2-maj-halo.alt { opacity: .6; }
+.parliament-toggle-group[hidden] { display: none; }
+
 @media (max-width: 640px) {
   .pv2 { padding: 14px 8px 8px; border-radius: 16px; }
   .pv2-big { font-size: 56px; }
