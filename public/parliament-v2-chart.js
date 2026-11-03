@@ -277,7 +277,19 @@
     let order = all;
     if (orderMode === 'vote') {
       const rank = c => c.dataset.v === 'yes' ? 0 : c.dataset.v === 'no' ? 2 : 1;
-      order = all.map((c, i) => [c, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(x => x[0]);
+      // Inside the yea and nay blocks the biggest party sits at the outer edge and smaller ones step down
+      // toward the centre (so both blocks taper into the undecided middle). The middle keeps party order.
+      const size = new Map();
+      all.forEach(c => { const k = rank(c) + '|' + c.dataset.p; size.set(k, (size.get(k) || 0) + 1); });
+      order = all.map((c, i) => [c, i]).sort((a, b) => {
+        const ra = rank(a[0]), rb = rank(b[0]);
+        if (ra !== rb) return ra - rb;
+        if (ra !== 1 && a[0].dataset.p !== b[0].dataset.p) {
+          const sa = size.get(ra + '|' + a[0].dataset.p), sb = size.get(rb + '|' + b[0].dataset.p);
+          if (sa !== sb) return ra === 0 ? sb - sa : sa - sb;     // yea: big first (far left); nay: small first (big ends far right)
+        }
+        return a[1] - b[1];
+      }).map(x => x[0]);
     }
     order.forEach((c, i) => {
       if (c._slot === i) return;
