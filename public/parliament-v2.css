@@ -785,6 +785,16 @@ body > #us-election-wrap { width: 100%; max-width: 1240px; }
 .pv2-maj.alt, .pv2-maj-halo.alt { opacity: .6; }
 .parliament-toggle-group[hidden] { display: none; }
 
+
+/* backup & transfer */
+.bk-note { font: 400 12px/1.5 var(--font-display); color: var(--muted); margin: 2px 0 10px; }
+.bk-row { flex-wrap: wrap; gap: 8px; }
+.bk-row [hidden] { display: none; }
+.persist-save-btn.bk-alt { background: var(--field) !important; color: var(--text) !important; border: 1px solid var(--border-hi) !important; }
+.bk-status { font: 500 12px var(--font-mono); color: var(--muted); min-height: 16px; margin-top: 8px; }
+.bk-status[data-kind="ok"] { color: var(--yes); }
+.bk-status[data-kind="err"] { color: var(--no); }
+
 @media (max-width: 640px) {
   .pv2 { padding: 14px 8px 8px; border-radius: 16px; }
   .pv2-big { font-size: 56px; }

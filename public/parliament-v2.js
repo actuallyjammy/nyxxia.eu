@@ -470,4 +470,102 @@
     s.src = 'parliament-v2-chart.js' + (me && me.includes('?') ? me.slice(me.indexOf('?')) : '');
     document.body.appendChild(s);
   })();
+
+  /* ── 10. Backup / transfer ─────────────────────────────
+     Everything the app saves lives in this browser's localStorage, so it can't follow you to another
+     device. This adds Export / Import (and a share-sheet button on phones) to the presets panel:
+     one JSON file with presets, snapshots, coalitions, autosave and the election states. */
+  (() => {
+    const panel = document.getElementById('persist-panel');
+    if (!panel) return;
+
+    // per-device preferences stay out of the backup
+    const SKIP = new Set(['parliament_theme', 'parliament_style', 'parliament_v2', 'parliament_v2_chart', 'parliament_v2_order']);
+    const inBackup = k => !SKIP.has(k) && (k.startsWith('parliament_') || k.startsWith('us_election_') || k.startsWith('catalonia_simulator'));
+    const keys = () => { const out = []; for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && inBackup(k)) out.push(k); } return out; };
+
+    // flush pending autosaves so the file has the latest state
+    const flush = () => { try { window.dispatchEvent(new Event('pagehide')); } catch (e) {} };
+
+    function makeBackup() {
+      flush();
+      const data = {};
+      keys().forEach(k => { data[k] = localStorage.getItem(k); });
+      return { app: 'parliament-simulator', version: 1, exportedAt: new Date().toISOString(), data };
+    }
+    const fileName = () => `parliament-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    const toFile = b => new File([JSON.stringify(b)], fileName(), { type: 'application/json' });
+
+    function applyBackup(b) {
+      const incoming = Object.entries(b.data).filter(([k, v]) => inBackup(k) && typeof v === 'string');
+      const previous = {};
+      keys().forEach(k => { previous[k] = localStorage.getItem(k); });
+      try {
+        keys().forEach(k => localStorage.removeItem(k));                 // replace, so stale portraits don't linger
+        incoming.forEach(([k, v]) => localStorage.setItem(k, v));
+        return incoming.length;
+      } catch (e) {                                                       // e.g. storage full: put things back
+        keys().forEach(k => localStorage.removeItem(k));
+        Object.entries(previous).forEach(([k, v]) => { try { localStorage.setItem(k, v); } catch (e2) {} });
+        throw e;
+      }
+    }
+
+    /* UI */
+    const sec = document.createElement('div');
+    sec.innerHTML = `
+      <div class="persist-divider"></div>
+      <div class="persist-section-label">Backup &amp; transfer</div>
+      <p class="bk-note">Save everything on this device to one file, then import it on another device (phone, laptop…). Importing replaces what's saved there.</p>
+      <div class="persist-save-row bk-row">
+        <button class="persist-save-btn" type="button" data-bk="export">Export backup</button>
+        <button class="persist-save-btn" type="button" data-bk="share" hidden>Share…</button>
+        <button class="persist-save-btn bk-alt" type="button" data-bk="import">Import backup</button>
+        <input type="file" accept="application/json,.json" data-bk="file" hidden />
+      </div>
+      <div class="bk-status" role="status"></div>`;
+    panel.appendChild(sec);
+    const status = $('.bk-status', sec), fileIn = $('[data-bk=file]', sec), shareBtn = $('[data-bk=share]', sec);
+    const say = (msg, kind) => { status.textContent = msg; status.dataset.kind = kind || ''; };
+
+    // Share sheet (AirDrop / Messages / Files) where the browser can share files, i.e. most phones
+    try { if (navigator.canShare && navigator.canShare({ files: [new File(['{}'], 'x.json', { type: 'application/json' })] })) shareBtn.hidden = false; } catch (e) {}
+
+    sec.addEventListener('click', async e => {
+      const btn = e.target.closest('[data-bk]');
+      if (!btn) return;
+      const act = btn.dataset.bk;
+      if (act === 'export') {
+        const f = toFile(makeBackup());
+        const url = URL.createObjectURL(f);
+        const a = document.createElement('a');
+        a.href = url; a.download = f.name;
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 2000);
+        say(`Saved ${f.name} (${Math.max(1, Math.round(f.size / 1024))} KB)`, 'ok');
+      } else if (act === 'share') {
+        try { await navigator.share({ files: [toFile(makeBackup())], title: 'Parliament backup' }); say('Shared', 'ok'); }
+        catch (err) { if (err && err.name !== 'AbortError') say('Could not open the share sheet — use Export instead', 'err'); }
+      } else if (act === 'import') {
+        fileIn.value = ''; fileIn.click();
+      }
+    });
+
+    fileIn.addEventListener('change', async () => {
+      const f = fileIn.files && fileIn.files[0];
+      if (!f) return;
+      try {
+        const b = JSON.parse(await f.text());
+        if (!b || b.app !== 'parliament-simulator' || !b.data || typeof b.data !== 'object') throw new Error('not a backup');
+        const n = Object.keys(b.data).filter(inBackup).length;
+        const when = b.exportedAt ? new Date(b.exportedAt).toLocaleString() : 'unknown date';
+        if (!confirm(`Replace the data saved on this device with the backup from ${when} (${n} items)?`)) { say('Import cancelled'); return; }
+        applyBackup(b);
+        say('Imported — reloading…', 'ok');
+        setTimeout(() => location.reload(), 500);
+      } catch (err) {
+        say(err && err.name === 'QuotaExceededError' ? 'Not enough storage on this device — nothing was changed' : "That file isn't a Parliament backup", 'err');
+      }
+    });
+  })();
 })();
