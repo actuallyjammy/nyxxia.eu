@@ -795,6 +795,21 @@ body > #us-election-wrap { width: 100%; max-width: 1240px; }
 .bk-status[data-kind="ok"] { color: var(--yes); }
 .bk-status[data-kind="err"] { color: var(--no); }
 
+
+/* caucus ring: the parent party's colour around a caucus's seats */
+.pv2 .cring {
+  fill: none; stroke: var(--rc); pointer-events: none; opacity: .95;
+  filter: drop-shadow(0 0 2.5px color-mix(in srgb, var(--rc) 70%, #fff 30%));
+  transform-box: fill-box; transform-origin: center;
+  transition: opacity .25s, transform .35s var(--ease-spring);
+}
+.pv2 .cring.in { animation: pv2In .55s var(--ease-spring) backwards; animation-delay: var(--ad, 0ms); }
+.pv2[data-color="vote"] .cring { display: none; }          /* in Yes/No mode seats show votes, not party identity */
+.pv2 .slot:hover .cring { transform: scale(1.4); }
+.pv2.dimming .cring { opacity: .1; }
+.pv2.dimming .cring.lit { opacity: 1; transform: scale(1.18); }
+.pv2-chip i.ringed, .pv2-tip i.ringed { box-shadow: 0 0 0 2px var(--card-solid), 0 0 0 3.5px var(--rc); margin: 0 3px; }
+
 @media (max-width: 640px) {
   .pv2 { padding: 14px 8px 8px; border-radius: 16px; }
   .pv2-big { font-size: 56px; }

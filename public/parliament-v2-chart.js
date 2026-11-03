@@ -47,6 +47,10 @@
     return n;
   };
 
+  // A caucus is drawn with an outer ring in its parent party's colour (as in the original chart)
+  const ringColor = p => { try { return isPartyCaucus(p) ? getPartyExteriorColor(p) : ''; } catch (e) { return ''; } };
+  const parentName = p => { try { const q = p.parentId && parties.find(x => x.id === p.parentId); return q && q.id !== p.id ? q.name : ''; } catch (e) { return ''; } };
+
   /* ── Seat maths ────────────────────────────────────── */
   const DOT_CAP = 600;
 
@@ -152,6 +156,15 @@
       c.style.setProperty('--ad', Math.min(700, i * 1.4).toFixed(0) + 'ms');
       c.style.setProperty('--td', Math.max(0, Math.min(380, s.x * .38)).toFixed(0) + 'ms');
       if (!reduce) c.classList.add('in');
+      const rc = ringColor(p);
+      if (rc) {
+        const ring = el('circle', { class: 'cring', cx: 0, cy: 0, r: (dot * 1.2 + 1.1).toFixed(1), 'stroke-width': Math.max(1.5, dot * .17).toFixed(1) });
+        ring.style.setProperty('--rc', rc);
+        ring.style.setProperty('--ad', Math.min(700, i * 1.4 + 120).toFixed(0) + 'ms');
+        if (!reduce) ring.classList.add('in');
+        slot.appendChild(ring);
+        c._ring = ring;
+      }
       slot.appendChild(c);
       dotsLayer.appendChild(slot);
       all.push(c);
@@ -248,7 +261,8 @@
     order.forEach(p => {
       const chip = document.createElement('button');
       chip.type = 'button'; chip.className = 'pv2-chip'; chip.dataset.p = p.id;
-      chip.innerHTML = `<i style="background:${p.color}"></i><span></span><b>${p.seats}</b>`;
+      const rc = ringColor(p);
+      chip.innerHTML = `<i class="${rc ? 'ringed' : ''}" style="background:${p.color};${rc ? `--rc:${rc}` : ''}"></i><span></span><b>${p.seats}</b>`;
       chip.querySelector('span').textContent = p.name;
       legend.appendChild(chip);
     });
@@ -329,8 +343,8 @@
       if (!seated.length) { svg.textContent = ''; svg.appendChild(el('text', { x: 500, y: 260, class: 'pv2-sub', 'text-anchor': 'middle' }, 'No parties configured')); legend.textContent = ''; sig = ''; model = null; return; }
       const groups = layout === 'westminster' ? westminsterGroups() : null;
       const s = layout + '|' + rc.total + '|' + rc.majority + '|' + (groups
-        ? ['government', 'opposition', 'crossbench', 'speaker'].map(g => groups[g].map(p => p.id + ':' + p.seats + p.color).join(',')).join('/')
-        : seated.map(p => p.id + ':' + p.seats + p.color).join(','));
+        ? ['government', 'opposition', 'crossbench', 'speaker'].map(g => groups[g].map(p => p.id + ':' + p.seats + p.color + ringColor(p)).join(',')).join('/')
+        : seated.map(p => p.id + ':' + p.seats + p.color + ringColor(p)).join(','));
       if (s !== sig) { sig = s; build(layout, seated, groups, rc.total, rc.majority); }
       paint();
     }
@@ -360,10 +374,10 @@
   /* ── Highlight a party from the list or legend ─────── */
   const highlight = id => {
     box.classList.toggle('dimming', !!id);
-    box.querySelectorAll('.seat.lit').forEach(c => c.classList.remove('lit'));
+    box.querySelectorAll('.seat.lit, .cring.lit').forEach(c => c.classList.remove('lit'));
     legend.querySelectorAll('.pv2-chip.lit').forEach(c => c.classList.remove('lit'));
     if (!id || !model) return;
-    (model.byParty.get(id) || []).forEach(c => c.classList.add('lit'));
+    (model.byParty.get(id) || []).forEach(c => { c.classList.add('lit'); if (c._ring) c._ring.classList.add('lit'); });
     const chip = legend.querySelector(`.pv2-chip[data-p="${CSS.escape(id)}"]`); if (chip) chip.classList.add('lit');
   };
   const list = document.getElementById('party-list');
@@ -382,8 +396,10 @@
     const entry = model.parties.get(c.dataset.p);
     if (!entry) { tip.hidden = true; return; }
     const r = box.getBoundingClientRect();
-    tip.innerHTML = `<i style="background:${entry.p.color}"></i><div><b></b><span>${entry.p.seats} seats${model.k > 1.001 ? ` · ≈${(entry.p.seats / (entry.count || 1)).toFixed(1)} per dot` : ''}</span></div><em data-v="${c.dataset.v}">${VOTE[c.dataset.v]}</em>`;
+    const rc = ringColor(entry.p), parent = rc ? parentName(entry.p) : '';
+    tip.innerHTML = `<i class="${rc ? 'ringed' : ''}" style="background:${entry.p.color};${rc ? `--rc:${rc}` : ''}"></i><div><b></b><span></span></div><em data-v="${c.dataset.v}">${VOTE[c.dataset.v]}</em>`;
     tip.querySelector('b').textContent = entry.p.name;
+    tip.querySelector('span').textContent = `${entry.p.seats} seats${parent ? ` · caucus of ${parent}` : ''}${model.k > 1.001 ? ` · ≈${(entry.p.seats / (entry.count || 1)).toFixed(1)} per dot` : ''}`;
     tip.hidden = false;
     const x = Math.min(r.width - tip.offsetWidth - 8, e.clientX - r.left + 14), y = e.clientY - r.top - tip.offsetHeight - 12;
     tip.style.transform = `translate(${Math.max(8, x)}px, ${Math.max(8, y < 8 ? e.clientY - r.top + 18 : y)}px)`;
