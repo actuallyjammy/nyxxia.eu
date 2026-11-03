@@ -463,12 +463,15 @@
     resize();
   })();
 
-  /* ── 9. Redesigned chamber charts (separate file, has its own Original/Redesigned toggle) ── */
+  /* ── 9. Redesigned chamber charts + reactive US map (separate files) ── */
   (() => {
     const me = document.currentScript && document.currentScript.src;
-    const s = document.createElement('script');
-    s.src = 'parliament-v2-chart.js' + (me && me.includes('?') ? me.slice(me.indexOf('?')) : '');
-    document.body.appendChild(s);
+    const q = me && me.includes('?') ? me.slice(me.indexOf('?')) : '';
+    ['parliament-v2-chart.js', 'parliament-v2-map.js'].forEach(f => {
+      const s = document.createElement('script');
+      s.src = f + q;
+      document.body.appendChild(s);
+    });
   })();
 
   /* ── 10. Backup / transfer ─────────────────────────────

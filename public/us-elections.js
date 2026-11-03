@@ -773,6 +773,8 @@
     const warmNext = deadline => {
       electionWarmupHandle = 0;
       if (revision !== electionResultRevision || countTimer || document.hidden) return;
+      // a full recompute is one unbroken 20-80 ms chunk: don't start one while the user is mid-edit
+      if (performance.now() - lastEditAt < 900) { queueWarmup(); return; }
       if (deadline && !deadline.didTimeout && deadline.timeRemaining() < 6) {
         queueWarmup();
         return;
@@ -839,6 +841,35 @@
       pendingReadoutOptions = null;
       renderElectionReadouts(nextOptions);
     });
+  }
+
+  /* Typing and slider drags fire input events much faster than a full recompute (about 20-80 ms) can keep up
+     with, and each one used to trigger its own. The "soft" scheduler waits for a pause in the burst (`delay`),
+     but never longer than `maxWait`, so a long drag still updates live. Leaving the field flushes it at once. */
+  let softReadoutTimer = 0, softReadoutOptions = null, softBurstStart = 0, lastEditAt = 0;
+  function scheduleElectionReadoutsSoon(options = {}, delay = 200, maxWait = 450) {
+    const now = performance.now();
+    lastEditAt = now;
+    softReadoutOptions = softReadoutOptions
+      ? {
+          preserveCandidates: softReadoutOptions.preserveCandidates && options.preserveCandidates,
+          includeMap: softReadoutOptions.includeMap || options.includeMap,
+          skipGovernment: softReadoutOptions.skipGovernment && options.skipGovernment,
+        }
+      : { ...options };
+    if (!softBurstStart) softBurstStart = now;
+    clearTimeout(softReadoutTimer);
+    if (now - softBurstStart >= maxWait) { flushSoftReadouts(); return; }
+    softReadoutTimer = setTimeout(flushSoftReadouts, delay);
+  }
+  function flushSoftReadouts() {
+    clearTimeout(softReadoutTimer);
+    softReadoutTimer = 0;
+    softBurstStart = 0;
+    if (!softReadoutOptions) return;
+    const options = softReadoutOptions;
+    softReadoutOptions = null;
+    scheduleElectionReadouts(options);
   }
 
   function clearQueuedMapRender() {
@@ -6689,6 +6720,7 @@
     wrap.addEventListener('input', event => {
       const target = event.target;
       if (!(target instanceof HTMLElement)) return;
+      lastEditAt = performance.now();
       if (target.dataset.blocShort !== undefined) {
         target.value = String(target.value || '').replace(/[^A-Za-z0-9]/g, '').toUpperCase().slice(0, 3);
         return;
@@ -6701,8 +6733,8 @@
           if (party.bloc) refreshBlocShareControls(party.bloc);
           refreshBallotAccessSummary(party);
           stopCountForInvalidVoteSetup();
-          scheduleElectionReadouts({ preserveCandidates:true, skipGovernment:true });
-          queueMapRender();
+          scheduleElectionReadoutsSoon({ preserveCandidates:true, skipGovernment:true });
+          queueMapRender(170);
           queueGovernmentRender();
           queueSaveState();
         }
@@ -6715,8 +6747,8 @@
           refreshPartyBaseControls(members);
           members.forEach(refreshBallotAccessSummary);
           stopCountForInvalidVoteSetup();
-          scheduleElectionReadouts({ preserveCandidates:true, skipGovernment:true });
-          queueMapRender();
+          scheduleElectionReadoutsSoon({ preserveCandidates:true, skipGovernment:true });
+          queueMapRender(170);
           queueGovernmentRender();
           queueSaveState();
         }
@@ -6748,8 +6780,8 @@
         invalidateElectionResults();
         const output = target.closest('.boost-chip')?.querySelector('output');
         if (output) output.textContent = Math.round(party.strongholds[abbr]);
-        scheduleElectionReadouts({ preserveCandidates:true, skipGovernment:true });
-        queueMapRender();
+        scheduleElectionReadoutsSoon({ preserveCandidates:true, skipGovernment:true });
+        queueMapRender(170);
         queueGovernmentRender();
         queueSaveState();
         return;
@@ -6758,7 +6790,7 @@
         setPartyField(party, target.dataset.field, target.value, card);
         if (isSoftPartyField(target.dataset.field)) {
           refreshPartyEditorCard(party, card);
-          scheduleElectionReadouts({ preserveCandidates:true, skipGovernment:true });
+          scheduleElectionReadoutsSoon({ preserveCandidates:true, skipGovernment:true }, 240, 2000);
           queueGovernmentRender();
         } else {
           deferInteractiveRender(renderAll, target);
@@ -6782,13 +6814,16 @@
           refreshBallotAccessSummary(party);
           stopCountForInvalidVoteSetup();
         }
-        scheduleElectionReadouts({ preserveCandidates:true, skipGovernment:true });
-        queueMapRender();
+        scheduleElectionReadoutsSoon({ preserveCandidates:true, skipGovernment:true });
+        queueMapRender(170);
         queueGovernmentRender();
         queueSaveState();
         return;
       }
     });
+    // finishing an edit (leaving the field, releasing a slider) applies any waiting update immediately
+    wrap.addEventListener('focusout', () => flushSoftReadouts());
+    wrap.addEventListener('change', () => flushSoftReadouts());
     wrap.addEventListener('change', event => {
       const target = event.target;
       if (target instanceof HTMLSelectElement && target.dataset.blocTicket) {

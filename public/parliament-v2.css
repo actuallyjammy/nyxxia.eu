@@ -664,7 +664,6 @@ body > #us-election-wrap { width: 100%; max-width: 1240px; }
 
 /* map */
 #us-election-wrap .election-map-stage { border-radius: 14px; background: color-mix(in srgb, var(--bg) 55%, transparent); border: 1px solid var(--border); overflow: hidden; }
-#us-election-wrap .real-us-map { background: radial-gradient(60% 70% at 50% 40%, color-mix(in srgb, var(--accent) 9%, transparent), transparent 75%) !important; }
 #us-election-wrap .state-path, #us-election-wrap .district-path, #us-election-wrap .small-state-tile { transition: filter .2s, opacity .2s; cursor: pointer; }
 #us-election-wrap .state-path:hover, #us-election-wrap .district-path:hover, #us-election-wrap .small-state-tile:hover { filter: brightness(1.28) saturate(1.15); }
 #us-election-wrap .map-zoom-controls { background: color-mix(in srgb, var(--card-solid) 85%, transparent); border: 1px solid var(--border-hi); border-radius: 12px; padding: 3px; }
@@ -682,6 +681,28 @@ body > #us-election-wrap { width: 100%; max-width: 1240px; }
   transform-origin: top left; animation: tipIn .18s var(--ease-out);
 }
 @keyframes tipIn { from { opacity: 0; transform: scale(.94); } }
+
+
+/* ── US map: reactive layer (parliament-v2-map.js) ─────── */
+#us-election-wrap .real-us-map .v2-fx { pointer-events: none; }
+.v2-hover, .v2-sel { fill: none; vector-effect: non-scaling-stroke; stroke-linejoin: round; pointer-events: none; }
+.v2-hover {
+  stroke: var(--text); stroke-width: 2; opacity: 0; transition: opacity .16s;
+  filter: drop-shadow(0 0 5px color-mix(in srgb, var(--accent) 75%, transparent));
+}
+.v2-hover.on { opacity: .95; }
+.v2-sel {
+  stroke: var(--accent); stroke-width: 2.6; opacity: 0;
+  filter: drop-shadow(0 0 7px color-mix(in srgb, var(--accent) 80%, transparent));
+}
+.v2-sel.on { opacity: 1; }
+.v2-pulse { pointer-events: none; }
+/* while hovering a state, the rest recede a little (small maps only; 400+ district maps skip this) */
+#us-election-wrap .real-us-map.v2-hovering:not(.v2-many) :is(.state-path, .district-path, .county-path):not(:hover) { opacity: .8; }
+/* the map's own glow takes the leader's colour (the --mood tint also drives the page background) */
+#us-election-wrap .real-us-map { background: radial-gradient(60% 70% at 50% 40%, rgba(var(--mood, 139,124,255), .14), transparent 75%) !important; }
+#us-election-wrap .small-state-tile { transition: transform .35s var(--ease-spring), filter .2s, border-color .2s; }
+#us-election-wrap .small-state-tile:hover { transform: translateY(-2px) scale(1.06); }
 
 @media (max-width: 760px) { #us-election-wrap .candidate-card:hover { transform: none; } }
 

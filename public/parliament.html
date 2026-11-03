@@ -1547,7 +1547,7 @@
     // v2 design toggle (see the "v2" button bottom-right). Loaded last so it can override the themes above.
     var PARLIAMENT_V2 = false;
     try { PARLIAMENT_V2 = localStorage.getItem('parliament_v2') === '1'; } catch (e) {}
-    if (PARLIAMENT_V2) document.write('<link rel="stylesheet" href="parliament-v2.css?v=20261107" />');
+    if (PARLIAMENT_V2) document.write('<link rel="stylesheet" href="parliament-v2.css?v=20261108" />');
   </script>
 </head>
 <body>
@@ -6549,7 +6549,7 @@
   <script src="us-map-data.js"></script>
   <script src="us-election-baseline.js"></script>
   <script src="us-house-map-data.js?v=20260722-highres1"></script>
-  <script src="us-elections.js?v=20261102-img-refs"></script>
+  <script src="us-elections.js?v=20261108-perf"></script>
   <script src="catalonia-embed.js?v=20261015-calls12"></script>
   <div class="style-switcher" id="style-switcher">
     <button class="style-sw-btn" id="sw-classic" onclick="switchStyle('parliament.css', this)">Classic</button>
@@ -6577,7 +6577,7 @@
       localStorage.setItem('parliament_style', 'parliament-new.css');
       document.getElementById('sw-v2').classList.add('active');
       document.getElementById('sw-new').classList.remove('active');
-      document.write('<script src="parliament-v2.js?v=20261107"><\/script>');
+      document.write('<script src="parliament-v2.js?v=20261108"><\/script>');
     }
     // Restore preference
     const savedStyle = localStorage.getItem('parliament_style');
