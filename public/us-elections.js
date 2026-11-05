@@ -1284,6 +1284,8 @@
         path:shapes[index].path, bbox:shapes[index].bbox,
         demPct:resolvedDem, gopPct:resolvedGop, otherPct:Math.max(0, 100 - resolvedDem - resolvedGop),
         lean:margin / 2,
+        margin2026:hasVoteBaseline ? undefined : fallback.margin2026,
+        lean2026:hasVoteBaseline ? undefined : fallback.lean2026,
         pviValue:hasVoteBaseline ? margin : fallback.pviValue,
         pvi:hasVoteBaseline ? `${margin < 0 ? 'D' : 'R'}+${Math.abs(margin).toFixed(1)}` : fallback.pvi,
         urban:hasVoteBaseline ? clamp(50 - margin * 0.9, 18, 94, fallback.urban) : fallback.urban,
@@ -1492,13 +1494,37 @@
     return { rows, laneTotals };
   }
 
+  /* House districts carry a 2026 result layer (margin2026, R minus D in points) that already includes the national
+     environment of that election (D+11.5). Measuring a seat against that environment gives its lean relative to the
+     nation, the same idea as Cook PVI but anchored to 2026 instead of the 2020/2024 baseline: it replaces PVI as the
+     starting point for hypothetical races, so a scenario equal to the 2026 environment reproduces the 2026 results and
+     seats that swung hard (e.g. Hispanic-majority districts) keep that swing. Returns R-positive points, or null. */
+  const HOUSE_2026_NATIONAL_DEM_MARGIN = 11.5;
+  function houseNationalDemMargin() {
+    const n = Number(window.US_HOUSE_MAP_DATA?.environment?.nationalDemMargin);
+    return Number.isFinite(n) ? n : HOUSE_2026_NATIONAL_DEM_MARGIN;
+  }
+  function districtRelativeLean(district) {
+    const m = Number(district?.margin2026);
+    if (district?.margin2026 !== null && district?.margin2026 !== undefined && Number.isFinite(m)) return m + houseNationalDemMargin();
+    const pvi = Number(district?.pviValue);
+    return district?.pviValue !== null && district?.pviValue !== undefined && Number.isFinite(pvi) ? pvi : null;
+  }
+  function districtLeanLabel(district) {
+    const rel = districtRelativeLean(district);
+    const has2026 = Number.isFinite(Number(district?.margin2026)) && district?.margin2026 !== null;
+    if (rel === null || !has2026) return district?.pvi || 'modeled';
+    return `${Math.abs(rel) < 0.5 ? 'EVEN' : `${rel < 0 ? 'D' : 'R'}+${Math.round(Math.abs(rel))}`} (2026)`;
+  }
+
   function baselineForRace(state, options = {}) {
     const county = options.county;
     const district = options.district;
     if (district) {
+      const rel = Number.isFinite(Number(district.margin2026)) && district.margin2026 !== null ? districtRelativeLean(district) : null;
       return {
-        demPct: Number(district.demPct) || clamp(50 - Number(district.lean || 0), 4, 94),
-        gopPct: Number(district.gopPct) || clamp(50 + Number(district.lean || 0), 4, 94),
+        demPct: rel !== null ? clamp(50 - rel / 2, 3, 94) : Number(district.demPct) || clamp(50 - Number(district.lean || 0), 4, 94),
+        gopPct: rel !== null ? clamp(50 + rel / 2, 3, 94) : Number(district.gopPct) || clamp(50 + Number(district.lean || 0), 4, 94),
         otherPct: Number(district.otherPct) || 2,
         total: Math.max(1, Number(district.total) || 520000),
       };
@@ -1574,10 +1600,10 @@
 
   function districtTwoPartyLeftShare(baseline, targets, options, targetLeft, nationalBaselineLeft) {
     const district = options.district || {};
-    const pvi = Number(district.pviValue);
+    const lean = districtRelativeLean(district);        // 2026-anchored; falls back to Cook PVI for custom maps
     const nationalMargin = (targetLeft - 50) * 2;
-    if (Number.isFinite(pvi)) {
-      return clamp(50 + (nationalMargin - pvi) / 2, 3, 97);
+    if (lean !== null) {
+      return clamp(50 + (nationalMargin - lean) / 2, 3, 97);
     }
     const baselineLeft = baseline.demPct / Math.max(0.01, baseline.demPct + baseline.gopPct) * 100;
     const baselineMargin = (baselineLeft - 50) * 2;
@@ -2184,7 +2210,8 @@
 
   function districtRaceState(district) {
     const state = stateByAbbr.get(district.state) || stateByAbbr.get('PA');
-    const districtLean = Number(district.lean);
+    const rel = districtRelativeLean(district);
+    const districtLean = rel !== null ? rel / 2 : Number(district.lean);
     return {
       ...state,
       lean: Number.isFinite(districtLean) ? districtLean : state.lean,
@@ -2195,8 +2222,8 @@
 
   function districtUrbanValue(district, state) {
     const rawUrban = clamp(district.urban, 10, 99, state.urban);
-    const pvi = Number(district.pviValue);
-    if (!Number.isFinite(pvi)) return rawUrban;
+    const pvi = districtRelativeLean(district);
+    if (pvi === null) return rawUrban;
     const pviUrban = clamp(50 - pvi * 0.95, 24, 86, rawUrban);
     const pviWeight = Math.abs(pvi) >= 8 ? 0.72 : 0.55;
     return clamp(rawUrban * (1 - pviWeight) + pviUrban * pviWeight, 16, 96, rawUrban);
@@ -4759,7 +4786,7 @@
       path.style.fill = fill;
       path.style.fillOpacity = row.called ? '1' : '0.32';
       path.dataset.district = district.id;
-      path.dataset.tip = tooltipHtml(district.label, row, `${district.stateName} · ${district.pvi || 'modeled'} · 1 House seat`);
+      path.dataset.tip = tooltipHtml(district.label, row, `${district.stateName} · ${districtLeanLabel(district)} · 1 House seat`);
       path.addEventListener('click', () => {
         app.selectedDistrict = district.id;
         app.selectedState = district.state;
@@ -5782,7 +5809,7 @@
           kind:'district',
           id:district.id,
           title:district.label,
-          subtitle:`${district.stateName} · ${district.pvi || 'modeled'} · 1 House seat`,
+          subtitle:`${district.stateName} · ${districtLeanLabel(district)} · 1 House seat`,
           row,
           state:row.state,
         };
