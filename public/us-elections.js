@@ -425,6 +425,28 @@
   const baselineCountyById = new Map();
   const baselineStateByAbbr = new Map();
   const baselineNational = { demPct:51.293, gopPct:46.839, otherPct:1.869, total:158433557 };
+
+  /* 2026 state swings (us-2026-swing.js, built from the 2026 Senate / governor / House results): how much more or
+     less Democratic each state moved from the 2020 baseline to 2026 than the nation did, in points of two-party margin.
+     The national part is already removed, so overall results still follow the national vote shares; only the *relative*
+     movement between states is carried over. It is not translated directly: it is applied at reduced strength and capped
+     per state, because individual races carry candidate effects. Used for the presidential and Senate models. */
+  const SWING_2026_WEIGHT = 0.5;      // share of the measured relative swing that is applied
+  const SWING_2026_CAP = 6;           // maximum shift per state, points of two-party margin
+  function stateSwingPoints2026(abbr) {
+    const entry = window.US_2026_SWING?.states?.[abbr];
+    const swing = Number(entry?.swing);
+    return Number.isFinite(swing) ? clamp(swing * SWING_2026_WEIGHT, -SWING_2026_CAP, SWING_2026_CAP) : 0;
+  }
+  // Same shift for every county of a state, in logit space, so lopsided counties move fewer points than competitive ones.
+  function stateSwingLogit(state) {
+    const points = stateSwingPoints2026(state?.abbr);
+    if (!points) return 0;
+    const row = baselineStateByAbbr.get(state.abbr);
+    const dem = Number(row?.demPct), gop = Number(row?.gopPct);
+    const p = Number.isFinite(dem) && Number.isFinite(gop) && dem + gop > 0 ? clamp(dem / (dem + gop), 0.05, 0.95) : 0.5;
+    return clamp((points / 200) / (p * (1 - p)), -0.6, 0.6);
+  }
   let countTimer = null;
   let app = loadState();
   let tooltip = null;
@@ -1586,7 +1608,7 @@
     return 1 / (1 + Math.exp(-value));
   }
 
-  function twoPartyLeftShare(baseline, targets, options = {}) {
+  function twoPartyLeftShare(baseline, targets, options = {}, state = null) {
     const baselineLeft = baseline.demPct / Math.max(0.01, baseline.demPct + baseline.gopPct) * 100;
     const nationalBaselineLeft = baselineNational.demPct / Math.max(0.01, baselineNational.demPct + baselineNational.gopPct) * 100;
     const targetLeft = targets.laneTotals.left / Math.max(0.01, targets.laneTotals.left + targets.laneTotals.right) * 100;
@@ -1595,7 +1617,7 @@
     const swingScale = options.senateSeat
       ? clamp(0.98 - baselineMargin * 0.007, 0.68, 0.95)
       : 1;
-    return logistic(logit(baselineLeft) + (logit(targetLeft) - logit(nationalBaselineLeft)) * swingScale) * 100;
+    return logistic(logit(baselineLeft) + stateSwingLogit(state) + (logit(targetLeft) - logit(nationalBaselineLeft)) * swingScale) * 100;
   }
 
   function districtTwoPartyLeftShare(baseline, targets, options, targetLeft, nationalBaselineLeft) {
@@ -1611,7 +1633,7 @@
     return clamp(50 + (baselineMargin + (nationalMargin - nationalBaselineMargin) * 0.70) / 2, 3, 97);
   }
 
-  function chamberTwoPartyLeftShare(baseline, targets, options, targetLeft) {
+  function chamberTwoPartyLeftShare(baseline, targets, options, targetLeft, state = null) {
     if (options.district) {
       return districtTwoPartyLeftShare(
         baseline,
@@ -1625,7 +1647,7 @@
     const nationalBaselineLeft = baselineNational.demPct / Math.max(0.01, baselineNational.demPct + baselineNational.gopPct) * 100;
     const baselineMargin = Math.abs((Number(baseline.demPct) || 0) - (Number(baseline.gopPct) || 0));
     const swingScale = clamp(0.98 - baselineMargin * 0.007, 0.68, 0.95);
-    return logistic(logit(baselineLeft) + (logit(targetLeft) - logit(nationalBaselineLeft)) * swingScale) * 100;
+    return logistic(logit(baselineLeft) + stateSwingLogit(state) + (logit(targetLeft) - logit(nationalBaselineLeft)) * swingScale) * 100;
   }
 
   function politicalCampRows(targetRows) {
@@ -1653,7 +1675,7 @@
     const rightTotal = camps.right.reduce((sum, row) => sum + row.pct, 0);
     if (leftTotal <= 0 || rightTotal <= 0) return null;
     const targetLeft = leftTotal / Math.max(0.01, leftTotal + rightTotal) * 100;
-    const leftTwoParty = chamberTwoPartyLeftShare(baseline, targets, options, targetLeft);
+    const leftTwoParty = chamberTwoPartyLeftShare(baseline, targets, options, targetLeft, state);
     const centerTotal = camps.center.reduce((sum, row) => sum + row.pct, 0);
     const closeness = 1 - Math.min(1, Math.abs(leftTwoParty - 50) / 32);
     const centerShare = Math.min(24, centerTotal * (0.48 + closeness * 0.32));
@@ -1772,7 +1794,7 @@
       const chamberShares = chamberRaceShares(state, options, baseline, targets);
       if (chamberShares) return chamberShares;
     }
-    const leftTwoParty = twoPartyLeftShare(baseline, targets, options);
+    const leftTwoParty = twoPartyLeftShare(baseline, targets, options, state);
     const centerBase = Math.min(35, targets.laneTotals.center);
     const countyCloseness = 1 - Math.min(1, Math.abs(baseline.demPct - baseline.gopPct) / 70);
     const centerShare = centerBase * (0.72 + countyCloseness * 0.38);
