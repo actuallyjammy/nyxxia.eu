@@ -1093,7 +1093,7 @@
 
   function districtNumberFromFeature(feature, index) {
     const props = feature?.properties || {};
-    const candidates = [props.district, props.DISTRICT, props.CD, props.CD119FP, props.GEOID, props.id, props.ID, props.NAME, feature?.id];
+    const candidates = [props.district, props.DISTRICT, props.CD, props.CD120FP, props.CD119FP, props.GEOID, props.id, props.ID, props.NAME, feature?.id];
     for (const candidate of candidates) {
       const match = String(candidate ?? '').match(/(?:^|\D)(\d{1,2})(?:\D|$)/);
       if (match) return Number(match[1]);
@@ -1232,7 +1232,7 @@
       ids.add(d.id);
       return {type:'Feature',id:d.id,properties:{name:d.id,shortName:d.id,longName:`${d.stateName || d.state} · ${d.label || d.id}`,value:1,state:d.state,district:d.district,source:d.custom?'imported':'vanilla'},geometry:housePathGeoJson(d.path)};
     });
-    return {type:'FeatureCollection',name:'Combined US House map',description:'YAPms presentation layout: fitted imported districts plus vanilla CD119 districts, including insets. Coordinates encode the simulator canvas, not real geographic locations. Import using Mercator with rotate/center disabled; Short Name=name, Long Name=longName, Value=value.',features};
+    return {type:'FeatureCollection',name:'Combined US House map',description:'YAPms presentation layout: fitted imported districts plus vanilla CD120 districts, including insets. Coordinates encode the simulator canvas, not real geographic locations. Import using Mercator with rotate/center disabled; Short Name=name, Long Name=longName, Value=value.',features};
   }
 
   async function exportCombinedHouseMap() {
@@ -1310,7 +1310,7 @@
     if (!customHouseMaps.delete(abbr)) return false;
     rebuildHouseDistrictIndexes();
     deleteCustomHouseMap(abbr).catch(() => {});
-    houseMapImportStatus = `${abbr} restored to the built-in CD119 map.`;
+    houseMapImportStatus = `${abbr} restored to the built-in CD120 map.`;
     houseMapImportError = false;
     invalidateElectionResults();
     return true;
@@ -1322,7 +1322,7 @@
     customHouseMaps.clear();
     rebuildHouseDistrictIndexes();
     clearCustomHouseMapDb().catch(() => {});
-    houseMapImportStatus = `All ${count} custom ${count === 1 ? 'map' : 'maps'} restored to built-in CD119.`;
+    houseMapImportStatus = `All ${count} custom ${count === 1 ? 'map' : 'maps'} restored to built-in CD120.`;
     houseMapImportError = false;
     invalidateElectionResults();
     return count;
@@ -4399,7 +4399,7 @@
       const selectedEntry = customHouseMaps.get(houseMapImportState);
       const defaultStatus = selectedEntry
         ? `${houseMapImportState} custom map · ${selectedEntry.fileName || 'GeoJSON'}${customHouseMaps.size > 1 ? ` · ${customHouseMaps.size} custom states active` : ''}`
-        : `${houseMapImportState} · built-in CD119 map${customHouseMaps.size ? ` · ${customHouseMaps.size} custom ${customHouseMaps.size === 1 ? 'state' : 'states'} active` : ''}`;
+        : `${houseMapImportState} · built-in CD120 map${customHouseMaps.size ? ` · ${customHouseMaps.size} custom ${customHouseMaps.size === 1 ? 'state' : 'states'} active` : ''}`;
       importStatus.hidden = app.electionMode !== 'house' || proportional;
       importStatus.textContent = houseMapImportStatus || defaultStatus + ' · ⌘/Ctrl+Shift+G: export combined map';
       importStatus.classList.toggle('error', houseMapImportError);
@@ -4726,7 +4726,7 @@
     const data = window.US_HOUSE_MAP_DATA;
     if (!data) return;
     setSvgViewBox(svg, data.viewBox || [0, 0, 960, 600], 'house');
-    if (modeLabel) modeLabel.textContent = customHouseMaps.size ? `House · CD119 + ${customHouseMaps.size} custom` : 'House · Census 2025 CD119';
+    if (modeLabel) modeLabel.textContent = customHouseMaps.size ? `House · CD120 + ${customHouseMaps.size} custom` : 'House · Census 2026 CD120';
     if (title) title.textContent = 'US House districts';
     if (back) back.style.display = 'none';
     const byId = new Map((result.districtResults || []).map(row => [row.district.id, row]));
@@ -6844,7 +6844,7 @@
         houseMapImportState = target.value;
         houseMapImportStatus = customHouseMaps.has(houseMapImportState)
           ? `${houseMapImportState} is using ${customHouseMaps.get(houseMapImportState).fileName || 'a custom map'}.`
-          : `${houseMapImportState} is using the built-in CD119 map.`;
+          : `${houseMapImportState} is using the built-in CD120 map.`;
         houseMapImportError = false;
         renderControls();
         return;
