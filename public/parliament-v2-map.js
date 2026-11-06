@@ -124,7 +124,7 @@
       // biggest visual changes first: a newly called race, then a flip
       changed.sort((a, b) => (b[2].called - b[1].called) - (a[2].called - a[1].called));
       changed.forEach(([p, from, to], i) => tween(p, from, to, i < MAX_FLASHES));
-      changed.filter(c => c[2].called).slice(0, MAX_PULSES).forEach(([p, , to]) => pulse(p, to.fill));
+      changed.filter(c => c[2].called && !c[1].called).slice(0, MAX_PULSES).forEach(([p, , to]) => pulse(p, to.fill));
     }
     prev = next; sig = newSig;
     svg.classList.toggle('v2-many', paths.length > MAX_ANIMATED);

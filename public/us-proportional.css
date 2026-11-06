@@ -86,3 +86,13 @@
 #us-election-wrap .investiture-role-label{margin-top:auto;margin-bottom:7px;font:9px var(--font-mono,monospace);text-transform:uppercase;letter-spacing:.08em;color:#6f8fa8}
 #us-election-wrap .investiture-card .investiture-party-card>select{width:100%;min-width:0;font-size:11px;min-height:36px}
 @media(max-width:650px){#us-election-wrap .investiture-rules{grid-template-columns:1fr}#us-election-wrap .investiture-rules>div{padding:12px}#us-election-wrap .investiture-footer{gap:16px}#us-election-wrap .investiture-controls label{flex:1;min-width:0;width:100%}#us-election-wrap .investiture-stage{white-space:normal}#us-election-wrap .investiture-verdict{min-width:150px}}
+
+/* Map layers (president): switch + legend */
+#us-election-wrap .map-layer-toggle[hidden],#us-election-wrap .map-layer-legend[hidden]{display:none}
+#us-election-wrap .map-layer-toggle{flex-wrap:wrap}
+#us-election-wrap .map-layer-toggle button{white-space:nowrap}
+#us-election-wrap .map-layer-legend{display:flex;align-items:center;justify-content:space-between;gap:10px 18px;flex-wrap:wrap;padding:9px 14px;margin:0 0 8px;border:1px solid var(--border);border-radius:12px;background:var(--field,rgba(255,255,255,.04));font-family:var(--font-mono);font-size:11px;color:var(--muted)}
+#us-election-wrap .map-layer-legend .mll-text{color:var(--text)}
+#us-election-wrap .map-layer-legend .mll-scale{display:flex;align-items:center;gap:8px}
+#us-election-wrap .map-layer-legend .mll-scale em{font-style:normal;white-space:nowrap}
+#us-election-wrap .map-layer-legend .mll-bar{display:block;width:180px;max-width:36vw;height:8px;border-radius:99px;border:1px solid var(--border)}

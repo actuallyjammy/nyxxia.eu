@@ -1541,7 +1541,7 @@
     }
     .theme-btn:hover { background: var(--faint); color: var(--text); }
   </style>
-  <link rel="stylesheet" href="us-proportional.css?v=20261019-senate150-header11" />
+  <link rel="stylesheet" href="us-proportional.css?v=20261113-layers" />
   <link rel="stylesheet" href="parliament-i18n.css?v=20261024-ca3">
   <script>
     // v2 design toggle (see the "v2" button bottom-right). Loaded last so it can override the themes above.
@@ -6550,7 +6550,7 @@
   <script src="us-election-baseline.js"></script>
   <script src="us-2026-swing.js?v=20261112-swing"></script>
   <script src="us-house-map-data.js?v=20261111-env"></script>
-  <script src="us-elections.js?v=20261112-swing"></script>
+  <script src="us-elections.js?v=20261113-layers"></script>
   <script src="catalonia-embed.js?v=20261015-calls12"></script>
   <div class="style-switcher" id="style-switcher">
     <button class="style-sw-btn" id="sw-classic" onclick="switchStyle('parliament.css', this)">Classic</button>
@@ -6578,7 +6578,7 @@
       localStorage.setItem('parliament_style', 'parliament-new.css');
       document.getElementById('sw-v2').classList.add('active');
       document.getElementById('sw-new').classList.remove('active');
-      document.write('<script src="parliament-v2.js?v=20261108"><\/script>');
+      document.write('<script src="parliament-v2.js?v=20261113"><\/script>');
     }
     // Restore preference
     const savedStyle = localStorage.getItem('parliament_style');
@@ -6594,6 +6594,6 @@
     }
     if (PARLIAMENT_V2) document.getElementById('sw-new').classList.remove('active');
   </script>
-  <script src="parliament-i18n.js?v=20261024-ca3"></script>
+  <script src="parliament-i18n.js?v=20261113-layers"></script>
 </body>
 </html>

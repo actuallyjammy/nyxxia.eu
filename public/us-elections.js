@@ -310,6 +310,7 @@
       seed: 2028,
       reporting: 0,
       simDuration: 120,
+      mapLayer: 'results',
       chamberView: 'bloc',
       mapView: 'bloc',
       electoralModel: 'us',
@@ -424,6 +425,11 @@
   const customHouseMaps = new Map();
   const baselineCountyById = new Map();
   const baselineStateByAbbr = new Map();
+  // Reference election for the comparison layers: 2024 when us-election-reference.js is loaded, otherwise the 2020
+  // baseline the simulation itself starts from. Same row shape as the baseline: { dem, gop, total, demPct, gopPct, ... }.
+  let referenceYear = 2020;
+  let referenceCountyById = baselineCountyById;
+  let referenceStateByAbbr = baselineStateByAbbr;
   const baselineNational = { demPct:51.293, gopPct:46.839, otherPct:1.869, total:158433557 };
 
   /* 2026 state swings (us-2026-swing.js, built from the 2026 Senate / governor / House results): how much more or
@@ -530,7 +536,8 @@
     out.settings.urbanTurnout = clamp(out.settings.urbanTurnout, -15, 15);
     out.settings.volatility = clamp(out.settings.volatility, 0, 12);
     out.settings.reporting = clamp(out.settings.reporting, 0, 100);
-    out.settings.simDuration = [120, 300, 600].includes(Number(out.settings.simDuration)) ? Number(out.settings.simDuration) : 120;
+    out.settings.simDuration = [120, 300, 600, 1200].includes(Number(out.settings.simDuration)) ? Number(out.settings.simDuration) : 120;
+    out.settings.mapLayer = ['results', 'reporting', 'remaining', 'reference', 'shift'].includes(out.settings.mapLayer) ? out.settings.mapLayer : 'results';
     out.settings.chamberView = out.settings.chamberView === 'party' ? 'party' : 'bloc';
     out.settings.mapView = out.settings.mapView === 'party' ? 'party' : 'bloc';
     out.settings.electoralModel = out.settings.electoralModel === 'ideological' ? 'ideological' : 'us';
@@ -1016,6 +1023,12 @@
       Object.assign(baselineNational, baseline.national || {});
       Object.entries(baseline.states || {}).forEach(([abbr, row]) => baselineStateByAbbr.set(abbr, row));
       Object.entries(baseline.counties || {}).forEach(([id, row]) => baselineCountyById.set(String(id).padStart(5, '0'), row));
+    }
+    const reference = window.US_ELECTION_REFERENCE;
+    if (reference?.counties && reference?.states) {
+      referenceYear = Number(reference.year) || 2024;
+      referenceCountyById = new Map(Object.entries(reference.counties).map(([id, row]) => [String(id).padStart(5, '0'), row]));
+      referenceStateByAbbr = new Map(Object.entries(reference.states));
     }
   }
 
@@ -2169,6 +2182,8 @@
       ev: options.ev || state.ev,
       label: options.label || state.abbr,
       countyReportingPct: countyBased?.reportingPct ?? 0,
+      progress: countyBased?.progress,
+      remainingVotes: countyBased?.remainingVotes,
       totalVotes,
       edited: !!edit,
     };
@@ -2187,10 +2202,12 @@
     );
     let totalVotes = 0;
     let calledVotes = 0;
+    let countedVotes = 0;
     counties.forEach(countyShape => {
       const row = countyResult(countyShape, state);
       const weight = Math.max(1, Number(row.totalVotes) || countyVoteTotal(state, row.county));
       totalVotes += weight;
+      countedVotes += weight * (row.progress ?? (row.called ? 1 : 0));
       if (row.called) calledVotes += weight;
       row.shares.forEach(share => {
         const total = totals.get(share.party.id);
@@ -2200,7 +2217,7 @@
     const shares = [...totals.values()]
       .map(row => ({ party:row.party, pct:row.votes / Math.max(1, totalVotes) * 100 }))
       .sort((a, b) => b.pct - a.pct);
-    return { shares, reportingPct:calledVotes / Math.max(1, totalVotes) * 100, totalVotes };
+    return { shares, reportingPct:calledVotes / Math.max(1, totalVotes) * 100, totalVotes, progress:countedVotes / Math.max(1, totalVotes), remainingVotes:Math.round(totalVotes - countedVotes) };
   }
 
   function countyProfile(county, state) {
@@ -2227,6 +2244,9 @@
     const result = { county:profile, state, shares, blocs:blocRows(shares), winner:winnerForShares(shares, true), totalVotes, edited:!!edit };
     result.callThreshold = callThresholdForCounty(profile, state, result);
     result.called = app.settings.reporting >= result.callThreshold;
+    // how far the count has got in this county, measured against its own call schedule
+    result.progress = clamp(app.settings.reporting / Math.max(1, result.callThreshold), 0, 1);
+    result.remainingVotes = Math.round(totalVotes * (1 - result.progress));
     return result;
   }
 
@@ -3321,6 +3341,7 @@
         <button class="duration-btn" data-action="set-duration" data-duration="120">2 minutes</button>
         <button class="duration-btn" data-action="set-duration" data-duration="300">5 minutes</button>
         <button class="duration-btn" data-action="set-duration" data-duration="600">10 minutes</button>
+        <button class="duration-btn" data-action="set-duration" data-duration="1200">20 minutes</button>
         <button class="duration-btn ghost" data-action="reset-count">Reset</button>
         <span class="simulation-status" id="simulation-status">0% called</span>
       </section>
@@ -3346,6 +3367,13 @@
                 <button class="election-btn small" data-action="reset-house-map" type="button">Reset state</button>
                 <button class="election-btn small house-map-reset-all" data-action="reset-all-house-maps" type="button">Reset all</button>
               </div>
+              <div class="chamber-view-toggle map-layer-toggle" id="map-layer-toggle" aria-label="Map layer" hidden>
+                <button data-action="set-map-layer" data-map-layer="results" type="button">Results</button>
+                <button data-action="set-map-layer" data-map-layer="reporting" type="button">Counted</button>
+                <button data-action="set-map-layer" data-map-layer="remaining" type="button">Remaining</button>
+                <button data-action="set-map-layer" data-map-layer="reference" type="button" id="map-layer-ref-btn">2020 result</button>
+                <button data-action="set-map-layer" data-map-layer="shift" type="button" id="map-layer-shift-btn">Shift vs 2020</button>
+              </div>
               <div class="chamber-view-toggle map-view-toggle" aria-label="Map grouping">
                 <button data-action="set-map-view" data-map-view="bloc" type="button">Bloc</button>
                 <button data-action="set-map-view" data-map-view="party" type="button">Party</button>
@@ -3355,6 +3383,7 @@
             </div>
           </div>
           <div class="house-map-import-status" id="house-map-import-status" hidden></div>
+          <div class="map-layer-legend" id="map-layer-legend" hidden></div>
           <div class="election-map-stage" id="election-map-stage">
             <svg class="real-us-map" id="real-us-map" role="img" aria-label="US election map" tabindex="0" preserveAspectRatio="xMidYMid meet" shape-rendering="geometricPrecision"></svg>
             <div class="map-zoom-controls" aria-label="Map zoom controls">
@@ -4403,6 +4432,14 @@
     document.querySelectorAll('[data-action="set-duration"]').forEach(btn => {
       btn.classList.toggle('active', Number(btn.dataset.duration) === Number(app.settings.simDuration));
     });
+    const layerToggle = document.getElementById('map-layer-toggle');
+    if (layerToggle) {
+      layerToggle.hidden = !mapLayerAvailable();
+      const refBtn = document.getElementById('map-layer-ref-btn'), shiftBtn = document.getElementById('map-layer-shift-btn');
+      if (refBtn) refBtn.textContent = `${referenceYear} result`;
+      if (shiftBtn) shiftBtn.textContent = `Shift vs ${referenceYear}`;
+      layerToggle.querySelectorAll('[data-map-layer]').forEach(btn => btn.classList.toggle('active', btn.dataset.mapLayer === mapLayerActive()));
+    }
     document.querySelectorAll('[data-action="set-chamber-view"]').forEach(btn => {
       btn.classList.toggle('active', btn.dataset.chamberView === app.settings.chamberView);
     });
@@ -4519,6 +4556,121 @@
     renderSidebar(calculateElection());
   }
 
+  /* ── Map layers (president, non-proportional) ─────────────────────────────────────────────────
+     Results (default) | Votes in | Remaining | <reference year> result | Shift vs <reference year>.
+     "Votes in" and "Remaining" read how far the count has got in each county (the global count measured against
+     that county's own call schedule). The reference layers read the reference election's county results: 2024 when
+     us-election-reference.js is loaded, otherwise the 2020 baseline the simulation starts from. */
+  const MAP_LAYER_IDS = ['results', 'reporting', 'remaining', 'reference', 'shift'];
+  const LAYER_BLUE = [37, 99, 235], LAYER_RED = [220, 38, 38], LAYER_NEUTRAL = [214, 222, 232];
+  const LAYER_SLATE = [71, 85, 105], LAYER_GREEN = [34, 197, 94], LAYER_DARK = [30, 41, 59], LAYER_AMBER = [251, 146, 60], LAYER_ALARM = [239, 68, 68];
+
+  function mapLayerAvailable() { return app.electionMode === 'president' && !app.settings.proportionalMode; }
+  function mapLayerActive() {
+    return mapLayerAvailable() && MAP_LAYER_IDS.includes(app.settings.mapLayer) ? app.settings.mapLayer : 'results';
+  }
+  function layerRamp(t, from, to) { return rgbToHex(from.map((c, i) => Math.round(c + (to[i] - c) * clamp(t, 0, 1)))); }
+  // value > 0 leans blue (Democratic), < 0 red (Republican); `scale` is the margin that reaches full strength
+  function layerDiverging(value, scale) {
+    const t = clamp(Math.abs(value) / scale, 0, 1), target = value >= 0 ? LAYER_BLUE : LAYER_RED;
+    const mixed = LAYER_NEUTRAL.map((c, i) => Math.round(c * (1 - t * 0.9) + target[i] * t * 0.9));
+    const darken = clamp((t - 0.7) / 0.3, 0, 1) * 0.25;
+    return rgbToHex(mixed.map(c => Math.round(c * (1 - darken))));
+  }
+  const layerMargin = (dem, gop) => (dem + gop > 0 ? (dem - gop) / (dem + gop) * 100 : 0);       // two-party, D minus R
+  const layerMarginLabel = margin => (Math.abs(margin) < 0.05 ? 'EVEN' : `${margin > 0 ? 'D' : 'R'}+${Math.abs(margin).toFixed(1)}`);
+
+  function referenceRowFor(row, kind) {
+    return kind === 'county'
+      ? referenceCountyById.get(String(row.county?.id ?? '').padStart(5, '0'))
+      : referenceStateByAbbr.get(row.state?.abbr);
+  }
+  function currentLaneMargin(row) {                  // left lane minus right lane, two-party
+    let left = 0, right = 0;
+    (row.shares || []).forEach(share => {
+      const lane = partyLane(share.party);
+      if (lane === 'left') left += share.pct; else if (lane === 'right') right += share.pct;
+    });
+    return left + right > 0 ? layerMargin(left, right) : null;
+  }
+  function layerProgress(row) { return clamp(row.progress ?? (row.called ? 1 : 0), 0, 1); }
+  function layerRemaining(row) { return row.remainingVotes ?? (row.called ? 0 : Number(row.totalVotes) || 0); }
+
+  function mapLayerContext(rows) {
+    const ctx = { layer: mapLayerActive(), maxRemaining: 1, total: 0, remaining: 0 };
+    rows.forEach(row => {
+      const remaining = layerRemaining(row);
+      ctx.total += Number(row.totalVotes) || 0;
+      ctx.remaining += remaining;
+      ctx.maxRemaining = Math.max(ctx.maxRemaining, remaining);
+    });
+    return ctx;
+  }
+
+  // null = use the normal results colouring
+  function layerPaint(row, kind, ctx) {
+    if (!ctx || ctx.layer === 'results') return null;
+    if (ctx.layer === 'reporting') {
+      const progress = layerProgress(row);
+      return { fill: layerRamp(progress, LAYER_SLATE, LAYER_GREEN), opacity: String(0.4 + 0.6 * progress), solid: true };
+    }
+    if (ctx.layer === 'remaining') {
+      const remaining = layerRemaining(row);
+      const t = Math.sqrt(clamp(remaining / ctx.maxRemaining, 0, 1));
+      const fill = t < 0.5 ? layerRamp(t * 2, LAYER_DARK, LAYER_AMBER) : layerRamp((t - 0.5) * 2, LAYER_AMBER, LAYER_ALARM);
+      return { fill, opacity: remaining <= 0 ? '0.3' : '1', solid: true };
+    }
+    const ref = referenceRowFor(row, kind);
+    if (!ref) return { fill: '#475569', opacity: '0.3', solid: true };
+    const refMargin = layerMargin(Number(ref.dem) || 0, Number(ref.gop) || 0);
+    if (ctx.layer === 'reference') return { fill: layerDiverging(refMargin, 40), opacity: '1', solid: true };
+    const now = row.called ? currentLaneMargin(row) : null;               // shift is only meaningful once a result is in
+    if (now === null) return { fill: '#64748b', opacity: '0.32', solid: false };
+    return { fill: layerDiverging(now - refMargin, 20), opacity: '1', solid: true };
+  }
+
+  function layerTipExtra(row, kind) {
+    const layer = mapLayerActive();
+    if (layer === 'results') return '';
+    const line = (label, value) => `<div class="election-tip-row layer-tip"><span>${escapeHtml(label)}</span><strong>${value}</strong></div>`;
+    const total = Number(row.totalVotes) || 0, remaining = layerRemaining(row);
+    if (layer === 'reporting' || layer === 'remaining') {
+      return line('Counted', `${Math.round(layerProgress(row) * 100)}% · ${compactVotes(Math.max(0, total - remaining))} of ${compactVotes(total)}`)
+        + line('Remaining', compactVotes(remaining));
+    }
+    const ref = referenceRowFor(row, kind);
+    if (!ref) return line(`${referenceYear} result`, 'no data');
+    const refMargin = layerMargin(Number(ref.dem) || 0, Number(ref.gop) || 0);
+    let html = line(`${referenceYear} result`, `${layerMarginLabel(refMargin)} · ${compactVotes(Number(ref.total) || 0)} votes`);
+    const now = row.called ? currentLaneMargin(row) : null;
+    if (now !== null) {
+      html += line('Simulated', layerMarginLabel(now)) + line(`Shift vs ${referenceYear}`, `${now - refMargin >= 0 ? 'toward D' : 'toward R'} ${Math.abs(now - refMargin).toFixed(1)}`);
+    } else {
+      html += line('Simulated', 'not called yet');
+    }
+    return html;
+  }
+
+  function renderMapLayerLegend(ctx) {
+    const legend = document.getElementById('map-layer-legend');
+    if (!legend) return;
+    if (!ctx || ctx.layer === 'results') { legend.hidden = true; legend.innerHTML = ''; return; }
+    const gradient = stops => `linear-gradient(90deg, ${stops.map(c => rgbToHex(c)).join(', ')})`;
+    const summary = `${compactVotes(Math.max(0, ctx.total - ctx.remaining))} counted · ${compactVotes(ctx.remaining)} remaining`;
+    let bar, left, right, text;
+    if (ctx.layer === 'reporting') {
+      bar = gradient([LAYER_SLATE, LAYER_GREEN]); left = '0%'; right = '100% counted'; text = summary;
+    } else if (ctx.layer === 'remaining') {
+      bar = gradient([LAYER_DARK, LAYER_AMBER, LAYER_ALARM]); left = '0'; right = `${compactVotes(ctx.maxRemaining)} remaining`; text = summary;
+    } else if (ctx.layer === 'reference') {
+      bar = gradient([LAYER_RED, LAYER_NEUTRAL, LAYER_BLUE]); left = 'R+40'; right = 'D+40'; text = `${referenceYear} presidential result · D−R margin`;
+    } else {
+      bar = gradient([LAYER_RED, LAYER_NEUTRAL, LAYER_BLUE]); left = 'toward R 20'; right = 'toward D 20'; text = `Change in margin vs ${referenceYear} · called races only`;
+    }
+    legend.innerHTML = `<span class="mll-text">${escapeHtml(text)}</span><span class="mll-scale"><em>${escapeHtml(left)}</em><i class="mll-bar" style="background:${bar}"></i><em>${escapeHtml(right)}</em></span>`;
+    legend.hidden = false;
+  }
+
   function renderMap(result) {
     const svg = document.getElementById('real-us-map');
     if (!svg || !window.US_ELECTION_MAP_DATA) return;
@@ -4529,6 +4681,7 @@
     const title = document.getElementById('map-title');
     const back = document.querySelector('[data-action="back-states"]');
     refreshMapModeControls();
+    renderMapLayerLegend(null);
     if(result.proportional){
       renderProportionalMap(svg,result,modeLabel,title,back);
       finalizeMapCameraLayer(svg);return;
@@ -4555,17 +4708,20 @@
       if (modeLabel) modeLabel.textContent = 'Counties';
       if (title) title.textContent = `${state.name} counties`;
       if (back) back.style.display = '';
-      counties.forEach(county => {
-        const row = countyResult(county, state);
+      const countyRows = counties.map(county => ({ county, row: countyResult(county, state) }));
+      const layerCtx = mapLayerContext(countyRows.map(item => item.row));
+      renderMapLayerLegend(layerCtx);
+      countyRows.forEach(({ county, row }) => {
         const path = svgPath(county.path, `county-path ${row.called ? marginClass(row.winner.margin) : 'uncalled'} ${String(county.id) === String(app.selectedCounty) ? 'selected' : ''}`);
         const mapColor = mapDisplayColor(row);
-        const fill = row.called ? shadeColor(mapColor, row) : '#64748b';
-        appendMapUnderlay(underlay, county.path, fill, row.called);
+        const paint = layerPaint(row, 'county', layerCtx)
+          || { fill: row.called ? shadeColor(mapColor, row) : '#64748b', opacity: row.called ? '1' : '0.32', solid: row.called };
+        appendMapUnderlay(underlay, county.path, paint.fill, paint.solid);
         path.style.setProperty('--party', mapColor);
-        path.style.fill = fill;
-        path.style.fillOpacity = row.called ? '1' : '0.32';
+        path.style.fill = paint.fill;
+        path.style.fillOpacity = paint.opacity;
         path.dataset.county = county.id;
-        path.dataset.tip = tooltipHtml(`${county.name} County`, row, `${state.name} county`);
+        path.dataset.tip = tooltipHtml(`${county.name} County`, row, `${state.name} county`) + layerTipExtra(row, 'county');
         path.addEventListener('click', () => {
           app.selectedState = state.abbr;
           app.selectedCounty = String(county.id);
@@ -4589,18 +4745,21 @@
     if (title) title.textContent = 'United States';
     if (back) back.style.display = 'none';
     const underlay = createMapUnderlayLayer(svg);
+    const layerCtx = mapLayerContext(result.stateResults);
+    renderMapLayerLegend(layerCtx);
     result.stateResults.forEach(row => {
       const shape = statePathByAbbr.get(row.state.abbr);
       if (!shape) return;
       const path = svgPath(shape.path, `state-path ${row.called ? marginClass(row.winner.margin) : 'uncalled'} ${row.state.abbr === app.selectedState ? 'selected' : ''}`);
       const mapColor = mapDisplayColor(row);
-      const fill = row.called ? shadeColor(mapColor, row) : '#64748b';
-      appendMapUnderlay(underlay, shape.path, fill, row.called);
+      const paint = layerPaint(row, 'state', layerCtx)
+        || { fill: row.called ? shadeColor(mapColor, row) : '#64748b', opacity: row.called ? '1' : '0.32', solid: row.called };
+      appendMapUnderlay(underlay, shape.path, paint.fill, paint.solid);
       path.style.setProperty('--party', mapColor);
-      path.style.fill = fill;
-      path.style.fillOpacity = row.called ? '1' : '0.32';
+      path.style.fill = paint.fill;
+      path.style.fillOpacity = paint.opacity;
       path.dataset.state = row.state.abbr;
-      path.dataset.tip = tooltipHtml(row.state.name, row, `${row.state.ev} electoral points`);
+      path.dataset.tip = tooltipHtml(row.state.name, row, `${row.state.ev} electoral points`) + layerTipExtra(row, 'state');
       path.addEventListener('click', () => {
         app.selectedState = row.state.abbr;
         app.selectedCounty = '';
@@ -6630,6 +6789,15 @@
           deferInteractiveRender(() => renderElectionReadouts({ includeMap:true }), actionEl);
           saveState();
         }
+        return;
+      }
+      if (action === 'set-map-layer') {
+        const layer = actionEl.dataset.mapLayer;
+        app.settings.mapLayer = MAP_LAYER_IDS.includes(layer) ? layer : 'results';
+        acknowledgeChoice(actionEl);
+        renderControls();
+        deferInteractiveRender(() => renderMap(calculateElection()), actionEl);
+        saveState();
         return;
       }
       if (action === 'set-map-view') {

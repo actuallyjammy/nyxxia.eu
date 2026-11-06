@@ -535,7 +535,14 @@
     'Split vote — drag to set percentages': 'Vot dividit — arrossega per definir els percentatges',
     'Split vote': 'Vot dividit',
     'No saved snapshots yet.': 'Encara no hi ha votacions desades.',
-    'No saved configurations yet.': 'Encara no hi ha configuracions desades.'
+    'No saved configurations yet.': 'Encara no hi ha configuracions desades.',
+    'Map layer': 'Capa del mapa', 'Counted': 'Escrutat',
+    '2020 result': 'Resultat del 2020', '2024 result': 'Resultat del 2024',
+    'Shift vs 2020': 'Canvi respecte al 2020', 'Shift vs 2024': 'Canvi respecte al 2024',
+    'presidential result': 'resultat presidencial', 'D−R margin': 'marge D−R',
+    'Change in margin vs': 'Canvi del marge respecte al', 'called races only': 'només contestes adjudicades',
+    'toward D': 'cap al D', 'toward R': 'cap al R',
+    'Simulated': 'Simulat', 'no data': 'sense dades', 'not called yet': 'encara sense adjudicar'
   });
   const dictionary = new Map(Object.entries(messages).map(([en, ca]) => [en.toLowerCase(), ca]));
   const escapeRegex = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
