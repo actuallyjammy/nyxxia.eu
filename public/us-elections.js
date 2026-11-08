@@ -645,6 +645,167 @@
     return (blocs || []).find(bloc => String(bloc.name || '').toLowerCase() === needle);
   }
 
+  /* ── Party traits ─────────────────────────────────────────────────────────────
+     A trait is a tag on a party ("Rust Belt roots", "Big cities", "Union households"…) that gives it
+     affinity with the places that fit it. Unlike the four sliders (which describe ideology) and the
+     stronghold list (which names single states), traits describe *who and where* the party belongs to,
+     and work down to county / district level through urbanity and the local partisan lean.
+     Each trait scores a place on a signed scale: about +1 where it fits fully, 0 where it is neutral,
+     down to -0.5 where it clearly does not. A party's effect is level (1-3) x strength x score, summed
+     over its traits and capped, then applied as a multiplier on its share (see traitLogShift). */
+  const MAX_PARTY_TRAITS = 6;
+  const TRAIT_LEVEL_STRENGTH = 0.15;
+  const TRAIT_LOG_CAP = 0.8;
+  const TRAIT_LEVEL_NAMES = ['', 'Light', 'Solid', 'Core'];
+  const TRAIT_GROUPS = [
+    { key:'ideology', label:'Ideology' },
+    { key:'place', label:'Settlement' },
+    { key:'community', label:'Communities' },
+    { key:'work', label:'Industry and labour' },
+    { key:'outlook', label:'Outlook' },
+  ];
+  const parseTraitWeights = text => Object.fromEntries(text.trim().split(/\s+/).map(item => {
+    const [abbr, weight] = item.split(':');
+    return [abbr, Number(weight)];
+  }));
+  // Share of each state (0-1) that belongs to the region / community / industry. Rounded, hand-set figures
+  // for the states as a whole; county and district differences come from the scoring functions below.
+  const TRAIT_STATE_WEIGHTS = {
+    appalachia:parseTraitWeights('WV:1 KY:.75 TN:.5 VA:.3 PA:.25 OH:.3 NC:.2 AL:.15 GA:.1 MD:.1 NY:.1'),
+    deepSouth:parseTraitWeights('MS:1 AL:1 SC:1 GA:.9 LA:.9 AR:.6 FL:.35 TN:.35 NC:.35 TX:.25'),
+    rustBelt:parseTraitWeights('OH:1 MI:1 PA:1 WI:.8 IN:.7 IL:.5 NY:.35 MN:.3 WV:.2'),
+    plains:parseTraitWeights('ND:1 SD:1 NE:1 KS:1 IA:.9 OK:.6 MT:.5 MO:.45 MN:.4 WY:.4 TX:.2 CO:.2'),
+    mountain:parseTraitWeights('MT:1 ID:1 WY:1 UT:.9 CO:.9 NV:.6 NM:.6 AZ:.5'),
+    pacific:parseTraitWeights('CA:1 OR:1 WA:1 HI:.8 AK:.55'),
+    newEngland:parseTraitWeights('ME:1 NH:1 VT:1 MA:1 CT:1 RI:1 NY:.2'),
+    midAtlantic:parseTraitWeights('NJ:1 DE:1 MD:1 DC:1 NY:.8 PA:.6 VA:.4'),
+    southwest:parseTraitWeights('NM:1 AZ:1 TX:.8 NV:.5 CA:.45'),
+    faith:parseTraitWeights('UT:1 MS:1 AL:1 TN:.9 AR:.9 SC:.9 OK:.85 GA:.8 LA:.75 KY:.75 ID:.7 NC:.65 TX:.6 WV:.55 KS:.5 MO:.5 NE:.45 SD:.45 WY:.45 ND:.4 IN:.4 VA:.35 FL:.35 AZ:.3 IA:.3 OH:.3'),
+    military:parseTraitWeights('VA:1 AK:.9 HI:.8 NC:.75 GA:.65 SC:.6 FL:.6 TX:.55 OK:.55 WA:.5 CO:.5 KS:.5 AL:.5 KY:.45 MD:.4 CA:.35 NE:.35 MO:.3 NM:.3 NV:.3 ND:.3 MT:.3 WY:.3 DE:.25'),
+    energy:parseTraitWeights('ND:1 WY:1 WV:1 OK:.9 AK:.9 TX:.8 LA:.8 NM:.6 PA:.5 KY:.5 MT:.4 CO:.3 UT:.3 OH:.3 MS:.25'),
+    farm:parseTraitWeights('IA:1 NE:1 ND:1 SD:1 KS:1 MN:.6 WI:.55 IL:.5 IN:.5 MO:.5 AR:.5 ID:.5 MT:.5 MS:.45 OK:.45 CA:.4 TX:.35 NC:.35 OH:.35 WA:.3 KY:.3 GA:.3 CO:.3 WY:.3 MI:.3 PA:.25 NY:.2'),
+  };
+  // 2020 Census, rounded: Hispanic or Latino share and Black alone share of each state's population, in percent.
+  const TRAIT_HISPANIC_PCT = parseTraitWeights('AL:5 AK:7 AZ:32 AR:9 CA:39 CO:22 CT:17 DE:10 DC:11 FL:26 GA:10 HI:11 ID:13 IL:18 IN:8 IA:7 KS:12 KY:4 LA:7 ME:2 MD:12 MA:13 MI:6 MN:6 MS:3 MO:5 MT:4 NE:12 NV:29 NH:4 NJ:22 NM:48 NY:19 NC:11 ND:4 OH:4 OK:11 OR:13 PA:8 RI:17 SC:6 SD:4 TN:7 TX:39 UT:15 VT:2 VA:10 WA:14 WV:2 WI:8 WY:10');
+  const TRAIT_BLACK_PCT = parseTraitWeights('AL:26 AK:4 AZ:5 AR:15 CA:6 CO:4 CT:10 DE:22 DC:41 FL:15 GA:31 HI:2 ID:1 IL:14 IN:9 IA:4 KS:6 KY:8 LA:31 ME:2 MD:30 MA:7 MI:13 MN:6 MS:38 MO:11 MT:1 NE:5 NV:9 NH:1 NJ:15 NM:2 NY:14 NC:20 ND:3 OH:12 OK:7 OR:2 PA:10 RI:6 SC:26 SD:2 TN:16 TX:12 UT:1 VT:1 VA:19 WA:4 WV:3 WI:6 WY:1');
+
+  const TRAIT_CATALOG = [
+    { id:'progressive', label:'Progressive', blurb:'Social liberalism, civil rights, urban cosmopolitanism', group:'ideology', score:ctx => ctx.t.progressive * 1.15 },
+    { id:'socialDemocrat', label:'Social democrat', blurb:'Welfare state, public services, regulated markets', group:'ideology', score:ctx => ctx.t.collectivist * 1.1 },
+    { id:'socialist', label:'Democratic socialist', blurb:'Public ownership, strong labour, anti-billionaire', group:'ideology', score:ctx => ctx.t.socialist * 0.5 + ctx.t.collectivist * 0.4 + ctx.density * 0.2 },
+    { id:'centrist', label:'Centrist', blurb:'Pragmatic, non-ideological, close-contest places', group:'ideology', score:ctx => ctx.t.moderate * 1.05 - 0.15 },
+    { id:'technocrat', label:'Technocratic reformer', blurb:'Evidence-led, college-educated suburbs and metros', group:'ideology', score:ctx => ctx.t.moderate * 0.4 + Math.max(0, ctx.density) * 0.5 + ctx.t.progressive * 0.2 - ctx.rural * 0.3 },
+    { id:'greenPolitics', label:'Green & eco', blurb:'Environmentalist and outdoorsy places', group:'ideology',
+      score:ctx => clamp(ctx.culture.green * 0.7 + ctx.density * 0.3 + ctx.t.progressive * 0.2, -0.5, 1, 0) },
+    { id:'libertarian', label:'Libertarian', blurb:'Small government, low taxes, personal freedom', group:'ideology', score:ctx => ctx.culture.liberty * 1.1 },
+    { id:'civilLiberties', label:'Civil liberties', blurb:'Privacy, free speech and personal-freedom states', group:'ideology', score:ctx => ctx.t.personalFreedom * 1.1 },
+    { id:'fiscalHawk', label:'Fiscal conservative', blurb:'Balanced budgets, lower taxes, deregulation', group:'ideology', score:ctx => ctx.t.market * 0.7 - ctx.t.collectivist * 0.35 + ctx.t.traditional * 0.2 },
+    { id:'proBusiness', label:'Pro-business', blurb:'Chambers of commerce, suburbs and growth economies', group:'ideology', score:ctx => ctx.t.market * 0.55 + (1 - Math.abs(ctx.urban - 62) / 30) * 0.35 - ctx.t.labor * 0.15 },
+    { id:'traditionalist', label:'Social conservative', blurb:'Tradition, family values and religious life', group:'ideology', score:ctx => ctx.t.traditional * 1.15 },
+    { id:'nationalist', label:'National conservative', blurb:'Border security, patriotism, cultural nationalism', group:'ideology', score:ctx => ctx.t.traditional * 0.5 + ctx.t.populist * 0.3 + ctx.rural * 0.3 - Math.max(0, ctx.density) * 0.3 },
+    { id:'populist', label:'Populist', blurb:'People against elites, left or right', group:'ideology', score:ctx => ctx.t.populist * 1.1 },
+    { id:'laborist', label:'Pro-worker', blurb:'Wages, unions and blue-collar economics', group:'ideology', score:ctx => ctx.t.labor * 0.7 + ctx.t.populist * 0.2 + ctx.rural * 0.1 },
+    { id:'localist', label:'Localist / states\' rights', blurb:'Local control and distrust of Washington', group:'ideology', score:ctx => ctx.t.localist * 0.9 + ctx.rural * 0.3 },
+
+    { id:'bigCities', label:'Big cities', blurb:'Dense urban cores', group:'place', score:ctx => clamp((ctx.urban - 62) / 28, -0.5, 1, 0) },
+    { id:'suburbs', label:'Suburbs', blurb:'Commuter belts and mid-density counties', group:'place', score:ctx => clamp(1 - Math.abs(ctx.urban - 62) / 20, -0.4, 1, 0) },
+    { id:'smallTowns', label:'Small towns & rural', blurb:'Villages, farmland and open country', group:'place', score:ctx => clamp((56 - ctx.urban) / 26, -0.5, 1, 0) },
+
+    { id:'hispanic', label:'Hispanic communities', blurb:'Latino-majority and Latino-heavy places', group:'community',
+      score:ctx => clamp(((TRAIT_HISPANIC_PCT[ctx.state.abbr] || 8) - 14) / 26, -0.4, 1, 0) + ctx.density * 0.18 },
+    { id:'blackCommunity', label:'Black communities', blurb:'Black Belt counties and city neighbourhoods', group:'community',
+      score:ctx => clamp(((TRAIT_BLACK_PCT[ctx.state.abbr] || 5) - 13) / 20, -0.4, 1, 0) + (TRAIT_BLACK_PCT[ctx.state.abbr] >= 9 ? ctx.leftLean * 0.32 + ctx.density * 0.1 : 0) },
+    { id:'faith', label:'Faith & family', blurb:'Evangelical, LDS and church-centred communities', group:'community',
+      score:ctx => (TRAIT_STATE_WEIGHTS.faith[ctx.state.abbr] || 0) * (0.65 + 0.35 * ctx.rural) },
+    { id:'military', label:'Military & veterans', blurb:'Bases, shipyards and veteran towns', group:'community',
+      score:ctx => TRAIT_STATE_WEIGHTS.military[ctx.state.abbr] || 0 },
+
+    { id:'unions', label:'Union households', blurb:'Organised labour, trades and public workers', group:'work',
+      score:ctx => clamp(((STATE_CULTURE_DATA[ctx.state.abbr]?.u ?? 10) - 9.5) / 9, -0.5, 1, 0) + (ctx.rustish ? 0.15 : 0) },
+    { id:'farm', label:'Farm & ranch', blurb:'Agriculture-dependent counties', group:'work',
+      score:ctx => (TRAIT_STATE_WEIGHTS.farm[ctx.state.abbr] || 0) * clamp((62 - ctx.urban) / 34, 0, 1, 0) * 1.25 },
+    { id:'energy', label:'Energy country', blurb:'Oil, gas, coal and power-plant economies', group:'work',
+      score:ctx => (TRAIT_STATE_WEIGHTS.energy[ctx.state.abbr] || 0) * (0.5 + 0.5 * ctx.rural) },
+
+    { id:'swing', label:'Swing-voter appeal', blurb:'Strongest where elections are close', group:'outlook',
+      score:ctx => clamp(1 - Math.abs(ctx.margin) / 22, -0.5, 1, 0) },
+    { id:'outsider', label:'Anti-establishment', blurb:'Distrust of both big parties', group:'outlook',
+      score:ctx => clamp(ctx.culture.independent * 0.65 + ctx.rural * 0.3 + ctx.culture.populist * 0.2, -0.5, 1, 0) },
+  ];
+  const TRAIT_BY_ID = new Map(TRAIT_CATALOG.map(trait => [trait.id, trait]));
+
+  function normalizeTraits(traits = {}) {
+    const out = {};
+    if (!traits || typeof traits !== 'object') return out;
+    const source = Array.isArray(traits) ? Object.fromEntries(traits.map(id => [id, 2])) : traits;
+    Object.entries(source).forEach(([id, level]) => {
+      if (!TRAIT_BY_ID.has(id) || Object.keys(out).length >= MAX_PARTY_TRAITS) return;
+      const value = Math.round(Number(level));
+      if (value >= 1) out[id] = Math.min(3, value);
+    });
+    return out;
+  }
+
+  function traitContext(state, options = {}, baseline = null) {
+    const unit = options.county || options.district;
+    const urban = clamp(unit?.urban ?? state.urban, 5, 100, 50);
+    const base = baseline || baselineForRace(state, options);
+    const total = Math.max(0.01, Number(base.demPct) + Number(base.gopPct));
+    const margin = (Number(base.demPct) - Number(base.gopPct)) / total * 100;
+    const data = STATE_CULTURE_DATA[state.abbr] || {};
+    const personalFreedom = clamp((25.5 - Number(data.p || 25.5)) / 24.5, -1, 1, 0);
+    const market = clamp((25.5 - Number(data.f || 25.5)) / 24.5, -1, 1, 0);
+    const accent = STATE_CULTURE_ACCENTS[state.abbr] || {};
+    return {
+      state, urban, margin,
+      t:stateCultureTraits(state, options, base),
+      rural:clamp((60 - urban) / 40, 0, 1, 0),
+      density:clamp((urban - 55) / 35, -0.4, 1, 0),
+      leftLean:clamp(margin / 40, -1, 1, 0),
+      rustish:(TRAIT_STATE_WEIGHTS.rustBelt[state.abbr] || 0) >= 0.7,
+      culture:{
+        liberty:clamp(personalFreedom * 0.4 + market * 0.32 + ballotCultureSignal(data.l, 0.42, 0.9) * 0.28, -1, 1, 0),
+        green:clamp(ballotCultureSignal(data.g, 0.56, 0.65) + (accent.green || 0), -1, 1, 0),
+        independent:clamp(ballotCultureSignal(data.i, 0.49, 1.1) + (accent.independent || 0), -1, 1, 0),
+        populist:clamp((accent.populist || 0), -1, 1, 0),
+      },
+    };
+  }
+
+  function traitScore(trait, ctx) {
+    return clamp(trait.score(ctx), -0.5, 1.15, 0);
+  }
+
+  /* Natural-log shift for one party in one place; 0 when it has no traits. */
+  function traitLogShift(party, state, options = {}, baseline = null) {
+    const entries = party?.traits ? Object.entries(party.traits) : [];
+    if (!entries.length) return 0;
+    const ctx = traitContext(state, options, baseline);
+    const scale = options.district ? 1.12 : options.senateSeat ? 1.04 : 1;
+    let sum = 0;
+    entries.forEach(([id, level]) => {
+      const trait = TRAIT_BY_ID.get(id);
+      if (trait) sum += level * TRAIT_LEVEL_STRENGTH * traitScore(trait, ctx);
+    });
+    return clamp(sum * scale, -TRAIT_LOG_CAP, TRAIT_LOG_CAP, 0);
+  }
+
+  /* States where a trait is strongest, for the chip tooltips (cached; independent of any party). */
+  const traitTopStatesCache = new Map();
+  function traitTopStates(id, count = 4) {
+    if (traitTopStatesCache.has(id)) return traitTopStatesCache.get(id);
+    const trait = TRAIT_BY_ID.get(id);
+    const ranked = STATE_META
+      .filter(state => state.abbr !== 'DC')
+      .map(state => ({ abbr:state.abbr, score:traitScore(trait, traitContext(state, {}, { demPct:50, gopPct:50 })) }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, count)
+      .filter(item => item.score > 0.2)
+      .map(item => item.abbr);
+    traitTopStatesCache.set(id, ranked);
+    return ranked;
+  }
+
   function normalizeParty(party, index = 0, sourceVersion = DEFAULT_STATE.uiVersion) {
     const economic = clamp(party.economic, 0, 100, 50);
     const image = String(party.image || '');
@@ -671,6 +832,7 @@
       populism: clamp(party.populism, 0, 100, 50),
       base: clamp(party.base, 0.1, 100, 1),
       strongholds: normalizeStrongholds(party.strongholds),
+      traits: normalizeTraits(party.traits),
     };
   }
 
@@ -1755,7 +1917,7 @@
       Math.pow(difference('geography'), 2) * 0.23 +
       Math.pow(difference('populism'), 2) * 0.16;
     const culture = stateProfileCultureScore(party, state, options, baseline);
-    let affinity = Math.exp(-distance * 1.28 + culture * 0.58);
+    let affinity = Math.exp(-distance * 1.28 + culture * 0.58 + traitLogShift(party, state, options, baseline));
     affinity *= ideologicalOrganizationAffinity(party, state, options);
     if (app.settings.volatility) {
       const key = `ideological:${app.settings.seed}:${party.id}:${state.abbr}:${options.label || ''}:${options.county?.id || ''}:${options.district?.id || ''}:${options.senateSeat?.class || ''}`;
@@ -1863,7 +2025,7 @@
       const compatibility = social * socialTerrain * 0.56 + stateEconomy * economicTerrain * 0.44;
       const culture = stateProfileCultureScore(row.party, state, options, baseline);
       const cultureStrength = options.county ? 0.16 : options.district ? 0.20 : options.senateSeat ? 0.19 : 0.18;
-      return { ...row, pct:row.pct * Math.exp(compatibility * strength + culture * cultureStrength) };
+      return { ...row, pct:row.pct * Math.exp(compatibility * strength + culture * cultureStrength + traitLogShift(row.party, state, options, baseline)) };
     });
     const adjustedTotal = adjusted.reduce((sum, row) => sum + row.pct, 0) || 1;
     return adjusted.map(row => ({ ...row, pct:row.pct / adjustedTotal * 100 }));
@@ -6325,11 +6487,40 @@
               <button class="election-btn small" data-action="add-boost" data-party="${escapeAttr(party.id)}">Add stronghold</button>
             </div>
             <div class="boost-list">${strongholds}</div>
+            ${partyTraitsMarkup(party)}
           </details>
         </article>
       `;
     }).join('');
     forcedOpenPartyId = '';
+  }
+
+  function partyTraitsMarkup(party) {
+    const traits = party.traits || {};
+    const used = Object.keys(traits).length;
+    const groups = TRAIT_GROUPS.map(group => `
+      <div class="trait-group">
+        <span class="trait-group-label">${escapeHtml(group.label)}</span>
+        <div class="trait-chips">
+          ${TRAIT_CATALOG.filter(trait => trait.group === group.key).map(trait => {
+            const level = traits[trait.id] || 0;
+            const top = traitTopStates(trait.id);
+            const tip = `${trait.blurb}.${top.length ? ` Strongest in ${top.join(', ')}.` : ''} Click to cycle Light, Solid, Core, off.`;
+            return `<button type="button" class="trait-chip ${level ? 'on' : ''}" data-action="toggle-trait" data-party="${escapeAttr(party.id)}" data-trait="${trait.id}" data-level="${level}" aria-pressed="${level ? 'true' : 'false'}" title="${escapeAttr(tip)}"><span>${escapeHtml(trait.label)}</span><i aria-hidden="true"><b></b><b></b><b></b></i></button>`;
+          }).join('')}
+        </div>
+      </div>
+    `).join('');
+    return `
+      <section class="party-traits" data-traits-for="${escapeAttr(party.id)}">
+        <div class="party-traits-head">
+          <strong>Traits</strong>
+          <span class="trait-count">${used} / ${MAX_PARTY_TRAITS}</span>
+          <span>Affinity with the places and communities that fit the party</span>
+        </div>
+        ${groups}
+      </section>
+    `;
   }
 
   function partyBallotAccessMarkup(party) {
@@ -6397,6 +6588,7 @@
         ballotAccess:party.ballotAccess,
         ballotStates:party.ballotStates,
         strongholds:party.strongholds,
+        traits:party.traits,
       })),
     });
   }
@@ -6930,6 +7122,7 @@
       if (action === 'remove-party') removeParty(actionEl.dataset.party);
       if (action === 'apply-preset') applyPreset(actionEl);
       if (action === 'add-boost') addBoost(actionEl);
+      if (action === 'toggle-trait') toggleTrait(actionEl.dataset.party, actionEl.dataset.trait);
       if (action === 'remove-boost') removeBoost(actionEl.dataset.party, actionEl.dataset.state);
       deferInteractiveRender(renderAll, actionEl);
       saveState();
@@ -7627,6 +7820,19 @@
       forcedOpenPartyId = party.id;
       invalidateElectionResults();
     }
+  }
+
+  function toggleTrait(partyId, traitId) {
+    const party = findParty(partyId);
+    if (!party || !TRAIT_BY_ID.has(traitId)) return;
+    const traits = normalizeTraits(party.traits || {});
+    const current = traits[traitId] || 0;
+    if (current >= 3) delete traits[traitId];
+    else if (!current && Object.keys(traits).length >= MAX_PARTY_TRAITS) return;
+    else traits[traitId] = current + 1;
+    party.traits = traits;
+    forcedOpenPartyId = party.id;
+    invalidateElectionResults();
   }
 
   function removeBoost(partyId, abbr) {

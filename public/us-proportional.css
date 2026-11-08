@@ -96,3 +96,26 @@
 #us-election-wrap .map-layer-legend .mll-scale{display:flex;align-items:center;gap:8px}
 #us-election-wrap .map-layer-legend .mll-scale em{font-style:normal;white-space:nowrap}
 #us-election-wrap .map-layer-legend .mll-bar{display:block;width:180px;max-width:36vw;height:8px;border-radius:99px;border:1px solid var(--border)}
+
+/* ── Party traits (US party editor) ─────────────────────────────── */
+.party-traits { margin-top: 14px; padding-top: 12px; border-top: 1px solid color-mix(in srgb, currentColor 14%, transparent); }
+.party-traits-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin-bottom: 8px; }
+.party-traits-head strong { font-size: 13px; }
+.party-traits-head span { font-size: 11.5px; opacity: .66; }
+.trait-group { margin-top: 8px; }
+.trait-group-label { display: block; margin-bottom: 4px; font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; opacity: .58; }
+.trait-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.trait-chip {
+  display: inline-flex; align-items: center; gap: 7px; padding: 5px 10px; border-radius: 999px; cursor: pointer;
+  font: inherit; font-size: 12px; color: inherit; background: color-mix(in srgb, currentColor 6%, transparent);
+  border: 1px solid color-mix(in srgb, currentColor 16%, transparent);
+  transition: background .18s, border-color .18s, transform .18s;
+}
+.trait-chip:hover { transform: translateY(-1px); border-color: color-mix(in srgb, var(--party, currentColor) 60%, transparent); }
+.trait-chip:active { transform: scale(.97); }
+.trait-chip i { display: inline-flex; gap: 2px; }
+.trait-chip i b { width: 5px; height: 5px; border-radius: 50%; background: color-mix(in srgb, currentColor 28%, transparent); transition: background .18s; }
+.trait-chip.on { background: color-mix(in srgb, var(--party, #4f8cff) 22%, transparent); border-color: color-mix(in srgb, var(--party, #4f8cff) 70%, transparent); }
+.trait-chip[data-level="1"] i b:nth-child(-n+1),
+.trait-chip[data-level="2"] i b:nth-child(-n+2),
+.trait-chip[data-level="3"] i b:nth-child(-n+3) { background: var(--party, #4f8cff); }
