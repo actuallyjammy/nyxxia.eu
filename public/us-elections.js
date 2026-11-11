@@ -317,6 +317,7 @@
       electionCycle: 'general',
       proportionalMode: false,
       proportionalMethod: 'sainte',
+      proportionalScope: 'states',
       proportionalThreshold: 3,
       proportionalThresholdMode: '3',
     },
@@ -544,6 +545,7 @@
     out.settings.electionCycle = out.settings.electionCycle === 'midterms' ? 'midterms' : 'general';
     out.settings.proportionalMode = out.settings.proportionalMode === true;
     out.settings.proportionalMethod = out.settings.proportionalMethod === 'dhondt' ? 'dhondt' : 'sainte';
+    out.settings.proportionalScope = out.settings.proportionalScope === 'national' ? 'national' : 'states';
     out.settings.proportionalThreshold = clamp(out.settings.proportionalThreshold,0,100,3);
     out.settings.proportionalThresholdMode = out.settings.proportionalThresholdMode==='custom'?'custom':[0,3,5].includes(out.settings.proportionalThreshold)?String(out.settings.proportionalThreshold):'custom';
     out.settings.investitureRound = out.settings.investitureRound === 2 ? 2 : 1;
@@ -2646,6 +2648,10 @@
   function sainteLagueSeats(weights,seats){return divisorSeats(weights,seats,'sainte');}
   function proportionalMethod(){return app.settings.proportionalMethod==='dhondt'?'dhondt':'sainte';}
   function proportionalMethodLabel(){return proportionalMethod()==='dhondt'?'D’Hondt':'Sainte-Laguë';}
+  // 'national' = one joint national list: votes are pooled across every state and the whole chamber is
+  // allocated at once. States still report and are coloured by how they voted, but hold no seats of their own.
+  function proportionalNational(){return app.settings.proportionalScope==='national';}
+  function proportionalListLabel(){return proportionalNational()?'National list':'State-list';}
   function proportionalThreshold(){return clamp(app.settings.proportionalThreshold??3,0,100,3);}
 
   function proportionalSeatAllocation(shares, seats) {
@@ -2711,9 +2717,11 @@
       weights.forEach(w=>prefix.push(prefix[prefix.length-1]+w/total));
       return prefix;
     }));
-    const finalRows={};
+    const national=proportionalNational(),finalRows={};
     for(const mode of ['house','senate'])finalRows[mode]=bases.map((base,index)=>{
       const ev=mode==='house'?base.state.ev-2:senateDelegations[index];
+      if(national)return {...base,kind:'proportional',winner:winnerForShares(base.shares),ev:0,
+        allocation:base.shares.map(share=>({...share,seats:0})),called:true,countProgress:100,label:base.state.abbr};
       return {...base,kind:'proportional',winner:winnerForShares(base.shares),ev,
         allocation:proportionalSeatAllocation(base.shares,ev),called:true,countProgress:100,label:base.state.abbr};
     });
@@ -2736,18 +2744,26 @@
         const rows=finalRows[mode].map((final,index)=>{
           const count=counted[index],called=count.progress>=100;
           const revealed=called?final.ev:count.progress>0?Math.min(final.ev,Math.floor(final.ev*Math.pow(count.progress/100,.85)+.35)):0;
-          const allocation=called?final.allocation:proportionalSeatAllocation(count.shares,revealed);
+          const allocation=national?final.allocation:called?final.allocation:proportionalSeatAllocation(count.shares,revealed);
           count.shares.forEach((share,i)=>{const total=totals.get(share.party.id);if(total)total.popularVotes+=count.votes[i];});
-          allocation.forEach(share=>{const total=totals.get(share.party.id);if(total){total.ev+=share.seats;if(share.seats)total.states++;}});
-          return {...final,allocation,called,unallocated:final.ev-allocation.reduce((n,s)=>n+s.seats,0),countProgress:count.progress,
-            winner:count.total?winnerForShares(count.shares):final.winner,shares:count.shares,totalVotes:count.total};
+          const winner=count.total?winnerForShares(count.shares):final.winner;
+          if(national){const total=totals.get(winner?.party?.id);if(total&&count.total)total.states++;}
+          else allocation.forEach(share=>{const total=totals.get(share.party.id);if(total){total.ev+=share.seats;if(share.seats)total.states++;}});
+          return {...final,allocation,called,unallocated:national?0:final.ev-allocation.reduce((n,s)=>n+s.seats,0),countProgress:count.progress,
+            winner,shares:count.shares,totalVotes:count.total};
         });
         const totalVotes=counted.reduce((n,c)=>n+c.total,0);
+        if(national){
+          // One joint list: pool the votes counted so far and allocate the whole chamber from them.
+          const seats=mode==='house'?HOUSE_SEATS:PROPORTIONAL_SENATE_SEATS;
+          const pooled=[...totals.values()].map(row=>({party:row.party,pct:totalVotes?row.popularVotes/totalVotes*100:0,votes:row.popularVotes}));
+          proportionalSeatAllocation(pooled,seats).forEach(share=>{const total=totals.get(share.party.id);if(total)total.ev=share.seats;});
+        }
         const parties=[...totals.values()].map(row=>({...row,popularPct:totalVotes?row.popularVotes/totalVotes*100:0}))
           .sort((a,b)=>b.ev-a.ev||b.popularPct-a.popularPct);
         frames[mode].push({mode,proportional:true,projections:rows.some(row=>!row.called),totalUnits:mode==='house'?HOUSE_SEATS:PROPORTIONAL_SENATE_SEATS,
-          majority:mode==='house'?218:Math.floor(PROPORTIONAL_SENATE_SEATS/2)+1,unitLabel:'seats',mapLabel:'State-list '+proportionalMethodLabel(),
-          battleLabel:'State constituencies',parties,stateResults:rows,senateResults:mode==='senate'?rows:[],
+          majority:mode==='house'?218:Math.floor(PROPORTIONAL_SENATE_SEATS/2)+1,unitLabel:'seats',mapLabel:proportionalListLabel()+' '+proportionalMethodLabel(),national,
+          battleLabel:national?'State votes':'State constituencies',parties,stateResults:rows,senateResults:mode==='senate'?rows:[],
           districtResults:[],unitResults:rows,leader:parties[0],battlegrounds:[],tipping:null});
       }
     }
@@ -3438,8 +3454,8 @@
           <button class="election-btn" data-action="mode-president">President</button>
           <button class="election-btn" data-action="toggle-midterms" aria-pressed="false">Midterms mode</button>
           <button class="election-btn" data-action="toggle-proportional" aria-pressed="false">Proportional mode</button>
-          <label class="proportional-threshold-control" data-proportional-threshold-control hidden><span>State threshold</span><select data-proportional-threshold-preset aria-label="Statewide electoral threshold"><option value="0">Off</option><option value="3">3%</option><option value="5">5%</option><option value="custom">Custom</option></select><span data-proportional-threshold-custom-wrap hidden><input data-proportional-threshold-custom type="number" min="0" max="100" step="0.1" aria-label="Custom statewide threshold percent">%</span></label>
-          <div class="electoral-model-control proportional-method-control" data-proportional-method-control hidden><span>Seat allocation</span><div class="electoral-model-switch" role="group" aria-label="Party seat allocation method"><button type="button" data-action="set-proportional-method" data-proportional-method="dhondt" title="D’Hondt: divisors 1, 2, 3…">D’Hondt</button><button type="button" data-action="set-proportional-method" data-proportional-method="sainte" title="Sainte-Laguë: divisors 1, 3, 5…">Sainte-Laguë</button></div></div>
+          <label class="proportional-threshold-control" data-proportional-threshold-control hidden><span data-proportional-threshold-label>State threshold</span><select data-proportional-threshold-preset aria-label="Electoral threshold"><option value="0">Off</option><option value="3">3%</option><option value="5">5%</option><option value="custom">Custom</option></select><span data-proportional-threshold-custom-wrap hidden><input data-proportional-threshold-custom type="number" min="0" max="100" step="0.1" aria-label="Custom statewide threshold percent">%</span></label>
+          <div class="electoral-model-control proportional-method-control" data-proportional-method-control hidden><span>Seat allocation</span><div class="electoral-model-switch" role="group" aria-label="Party seat allocation method"><button type="button" data-action="set-proportional-method" data-proportional-method="dhondt" title="D’Hondt: divisors 1, 2, 3…">D’Hondt</button><button type="button" data-action="set-proportional-method" data-proportional-method="sainte" title="Sainte-Laguë: divisors 1, 3, 5…">Sainte-Laguë</button></div><div class="electoral-model-switch" role="group" aria-label="Party list scope"><button type="button" data-action="set-proportional-scope" data-proportional-scope="states" title="Seats are allocated inside each state, in multi-member districts">By state</button><button type="button" data-action="set-proportional-scope" data-proportional-scope="national" title="One joint national list: votes are pooled and the whole chamber is allocated at once">National</button></div></div>
           <button class="election-btn" data-action="mode-senate">Senate</button>
           <button class="election-btn" data-action="mode-house">House</button>
           <button class="election-btn" data-action="export-hemicycle">Send to hemicycle</button>
@@ -4020,7 +4036,7 @@
     card.className='government-card investiture-card'+(formed?' formed':'');
     setStableMarkup(card,`<div class="government-head"><div><span class="election-kicker">Parliamentary government</span><h3>${formed?'Government invested':'House investiture'}</h3><p class="investiture-subtitle">Build a majority in the House to appoint a prime minister.</p></div><span class="investiture-stage ${formed?'success':''}">${formed?'Invested':complete?'Ready for a vote':'Awaiting results'}</span></div>
       <div class="investiture-rules"><div class="${round===1?'current':''}"><span>First ballot</span><strong>218 <small>yes votes</small></strong><p>Absolute House majority</p></div><div class="${round===2?'current':''}"><span>Second ballot</span><strong>Yes <small>must exceed</small> No</strong><p>Abstentions can make the difference</p></div><div><span>Voting chamber</span><strong>435 <small>House seats</small></strong><p>The 150-seat Senate does not vote</p></div></div>
-      <details class="investiture-explainer" ${rulesOpen?'open':''}><summary>How this mode works</summary><ul><li>House state delegations use the 2020 Census apportionment. Senate states each receive one seat, with 100 additional seats distributed by population.</li><li>${escapeHtml(proportionalMethodLabel())} uses divisors ${proportionalMethod()==='dhondt'?'1, 2, 3…':'1, 3, 5…'} with ${proportionalThreshold()?proportionalThreshold()+'% statewide eligibility':'no legal vote threshold'}. Electoral blocs pool votes, then split seats between members by the same rule.</li><li>States confirm their seats as local counts finish. Government formation unlocks once the full count is complete.</li></ul></details>
+      <details class="investiture-explainer" ${rulesOpen?'open':''}><summary>How this mode works</summary><ul>${proportionalNational()?'<li>One joint national list: votes from every state are pooled and all 435 House or 150 Senate seats are allocated together.</li>':'<li>House state delegations use the 2020 Census apportionment. Senate states each receive one seat, with 100 additional seats distributed by population.</li>'}<li>${escapeHtml(proportionalMethodLabel())} uses divisors ${proportionalMethod()==='dhondt'?'1, 2, 3…':'1, 3, 5…'} with ${proportionalThreshold()?proportionalThreshold()+(proportionalNational()?'% national eligibility':'% statewide eligibility'):'no legal vote threshold'}. Electoral blocs pool votes, then split seats between members by the same rule.</li><li>States confirm their seats as local counts finish. Government formation unlocks once the full count is complete.</li></ul></details>
       <div class="investiture-controls"><label>Prime minister nominee<select data-investiture-nominee ${complete?'':'disabled'}><option value="">Choose nominee</option>${app.parties.map(p=>`<option value="${escapeAttr(p.id)}" ${p.id===nominee?.id?'selected':''}>${escapeHtml(p.candidate||p.party)}</option>`).join('')}</select></label><div class="investiture-ballots" role="group" aria-label="Investiture ballot">
       <button class="election-btn ${round===1?'active':''}" aria-pressed="${round===1}" data-action="investiture-round-1">First ballot</button><button class="election-btn ${round===2?'active':''}" aria-pressed="${round===2}" data-action="investiture-round-2">Second ballot</button></div></div>
       <div class="government-party-grid investiture-party-grid">${house.parties.filter(r=>r.ev>0).map(row=>{
@@ -4548,6 +4564,12 @@
     }
     const methodControl=document.querySelector('[data-proportional-method-control]');
     if(methodControl)methodControl.hidden=!proportional;
+    document.querySelectorAll('[data-proportional-scope]').forEach(button=>{
+      const selected=(button.dataset.proportionalScope==='national')===proportionalNational();
+      button.classList.toggle('active',selected);button.setAttribute('aria-pressed',String(selected));
+    });
+    const thresholdLabel=document.querySelector('[data-proportional-threshold-label]');
+    if(thresholdLabel)setTextIfChanged(thresholdLabel,proportionalNational()?'National threshold':'State threshold');
     document.querySelectorAll('[data-proportional-method]').forEach(button=>{
       const selected=button.dataset.proportionalMethod===proportionalMethod();
       button.classList.toggle('active',selected);button.setAttribute('aria-pressed',String(selected));
@@ -4556,7 +4578,7 @@
     proportionalButton?.classList.toggle('active',proportional);
     proportionalButton?.setAttribute('aria-pressed',String(proportional));
     if(cycleButton)cycleButton.hidden=proportional;
-    for(const action of ['mode-president','map-states','map-counties']){
+    for(const action of ['mode-president']){
       const button=document.querySelector(`[data-action="${action}"]`);
       if(button && proportional)button.style.display='none';
     }
@@ -4686,8 +4708,9 @@
   function refreshMapModeControls() {
     const stateButton = document.querySelector('[data-action="map-states"]');
     const countyButton = document.querySelector('[data-action="map-counties"]');
-    stateButton?.classList.toggle('active', app.electionMode === 'president' && app.mapMode === 'states');
-    countyButton?.classList.toggle('active', app.electionMode === 'president' && app.mapMode === 'counties');
+    const mapModeOwner = app.settings.proportionalMode || app.electionMode === 'president';
+    stateButton?.classList.toggle('active', mapModeOwner && app.mapMode === 'states');
+    countyButton?.classList.toggle('active', mapModeOwner && app.mapMode === 'counties');
   }
 
   function renderMapSelection() {
@@ -4844,17 +4867,20 @@
     const back = document.querySelector('[data-action="back-states"]');
     refreshMapModeControls();
     renderMapLayerLegend(null);
-    if(result.proportional){
+    // Proportional mode keeps its state-list map, with an optional county drill-down for the selected state.
+    const proportionalCounties = !!result.proportional && app.mapMode === 'counties';
+    if(proportionalCounties)proportionalMapNodes=null;
+    if(result.proportional && !proportionalCounties){
       renderProportionalMap(svg,result,modeLabel,title,back);
       finalizeMapCameraLayer(svg);return;
     }
 
-    if (app.electionMode === 'house') {
+    if (app.electionMode === 'house' && !proportionalCounties) {
       renderHouseMap(svg, result, modeLabel, title, back);
       finalizeMapCameraLayer(svg);
       return;
     }
-    if (app.electionMode === 'senate') {
+    if (app.electionMode === 'senate' && !proportionalCounties) {
       renderSenateMap(svg, result, modeLabel, title, back);
       finalizeMapCameraLayer(svg);
       renderSmallStateInset(result, 'senate');
@@ -4868,7 +4894,7 @@
       const underlay = createMapUnderlayLayer(svg);
       setSvgViewBox(svg, paddedBbox(stateShape?.bbox || window.US_ELECTION_MAP_DATA.viewBox, 10), `counties-${state.abbr}`);
       if (modeLabel) modeLabel.textContent = 'Counties';
-      if (title) title.textContent = `${state.name} counties`;
+      if (title) title.textContent = proportionalCounties ? `${state.name} counties · county winners` : `${state.name} counties`;
       if (back) back.style.display = '';
       const countyRows = counties.map(county => ({ county, row: countyResult(county, state) }));
       const layerCtx = mapLayerContext(countyRows.map(item => item.row));
@@ -5164,8 +5190,9 @@
 
   function renderProportionalMap(svg,result,modeLabel,title,back) {
     setSvgViewBox(svg,nationalMapViewBoxWithInset(),'proportional-'+result.mode);
-    if(modeLabel)modeLabel.textContent=proportionalMethodLabel()+' · '+result.totalUnits+' seats';
-    if(title)title.textContent='State-list '+(result.mode==='house'?'House':'Senate');
+    const national=proportionalNational();
+    if(modeLabel)modeLabel.textContent=proportionalMethodLabel()+' · '+result.totalUnits+' seats'+(national?' · one national list':'');
+    if(title)title.textContent=(national?'National-list ':'State-list ')+(result.mode==='house'?'House':'Senate');
     if(back)back.style.display='none';
     const underlay=createMapUnderlayLayer(svg);
     const nodes=new Map();
@@ -5175,8 +5202,9 @@
       const underlayPath=appendMapUnderlay(underlay,shape.path,fill,row.called);
       const path=svgPath(shape.path,'state-path'+(row.state.abbr===app.selectedState?' selected':''));
       path.style.fill=fill;path.style.setProperty('--party',color);path.dataset.state=row.state.abbr;
-      path.dataset.tip=tooltipHtml(row.state.name,row,row.ev+' seats · '+proportionalMethodLabel());
+      path.dataset.tip=tooltipHtml(row.state.name,row,national?'Statewide vote · no state seats':row.ev+' seats · '+proportionalMethodLabel());
       path.addEventListener('click',()=>{app.selectedState=row.state.abbr;app.editingRace='';renderMapSelection();renderSidebar(calculateElection());saveState();});
+      path.addEventListener('dblclick',()=>{app.selectedState=row.state.abbr;app.selectedCounty='';app.mapMode='counties';app.editingRace='';renderControls();renderElectionReadouts({includeMap:true,skipGovernment:true});saveState();});
       path.addEventListener('mousemove',moveTip);path.addEventListener('mouseenter',showTip);path.addEventListener('mouseleave',hideTip);svg.appendChild(path);
       nodes.set(row.state.abbr,{path,underlayPath,called:null});
     });
@@ -5190,7 +5218,7 @@
       }
       return {...row,allocation:[...max.values(),{party:{id:'__unallocated',short:'UNC',color:'#64748b'},seats:row.ev,pct:0}]};
     })};
-    renderProportionalSeatBubbles(svg,layout);
+    if(!national)renderProportionalSeatBubbles(svg,layout);
     for(const [abbr,node] of nodes){
       node.bubble=svg.querySelector(`[data-state-bubble="${abbr}"]`);
       node.line=svg.querySelector(`[data-state-bubble-line="${abbr}"]`);
@@ -5202,6 +5230,7 @@
 
   function updateProportionalMap(result) {
     const cached=proportionalMapNodes;
+    if(app.mapMode==='counties'){renderMap(result);return;}
     if(!cached || !cached.svg.isConnected || cached.mode!==result.mode || cached.mapView!==app.settings.mapView){renderMap(result);return;}
     for(const row of result.stateResults){
       const node=cached.nodes.get(row.state.abbr);if(!node)continue;
@@ -5232,7 +5261,9 @@
         }
         if(node.line)node.line.style.display='';
       }
-      node.path.dataset.tip=row.called?tooltipHtml(row.state.name,row,row.ev+' seats · '+proportionalMethodLabel()):
+      node.path.dataset.tip=proportionalNational()
+        ? (row.called?tooltipHtml(row.state.name,row,'Statewide vote · no state seats'):`<strong>${escapeHtml(row.state.name)}</strong><em>${Math.floor(row.countProgress)}% counted · leader may change</em>`)
+        : row.called?tooltipHtml(row.state.name,row,row.ev+' seats · '+proportionalMethodLabel()):
         `<strong>${escapeHtml(row.state.name)}</strong><em>${Math.floor(row.countProgress)}% counted · provisional seats may change · ${row.unallocated} unallocated</em>`;
     }
   }
@@ -6142,7 +6173,7 @@
   function selectedRaceTarget(result) {
     if(result.proportional){
       const row=result.stateResults.find(r=>r.state.abbr===app.selectedState)||result.stateResults[0];
-      return {kind:'state',id:row.state.abbr,title:row.state.name,subtitle:row.ev+' seats · '+proportionalMethodLabel(),row,state:row.state};
+      return {kind:'state',id:row.state.abbr,title:row.state.name,subtitle:proportionalNational()?'Statewide vote · national list':row.ev+' seats · '+proportionalMethodLabel(),row,state:row.state};
     }
     if (app.electionMode === 'house') {
       const district = houseDistrictById.get(app.selectedDistrict) || houseDistricts[0];
@@ -6325,15 +6356,16 @@
     const target=selectedRaceTarget(result),editing=app.editingRace===raceTargetKey(target);
     const card=document.getElementById('selected-race-card');
     if(card)card.classList.add('proportional-results-card');
-    if(card && row)setStableMarkup(card,`<div class="race-card-head"><div><span class="election-kicker">State constituency</span><h3>${escapeHtml(row.state.name)}</h3></div><b class="pr-total-seats">${row.ev}<small>seats</small></b></div>
-      <div class="pr-count-status ${row.called?'confirmed':''}"><span></span>${row.called?'Allocation confirmed':row.countProgress.toFixed(0)+'% counted'}<small>${escapeHtml(proportionalMethodLabel())}</small></div>
+    const national=proportionalNational();
+    if(card && row)setStableMarkup(card,`<div class="race-card-head"><div><span class="election-kicker">${national?'State vote':'State constituency'}</span><h3>${escapeHtml(row.state.name)}</h3></div>${national?`<b class="pr-total-seats">${pct(row.shares?.[0]?.pct||0)}<small>${escapeHtml(row.winner?.party?.short||row.shares?.[0]?.party?.short||'')}</small></b>`:`<b class="pr-total-seats">${row.ev}<small>seats</small></b>`}</div>
+      <div class="pr-count-status ${row.called?'confirmed':''}"><span></span>${row.called?(national?'Count complete':'Allocation confirmed'):row.countProgress.toFixed(0)+'% counted'}<small>${national?'National list':escapeHtml(proportionalMethodLabel())}</small></div>
       <button class="election-btn small" data-action="toggle-race-edit" data-race-kind="state" data-race-id="${escapeAttr(row.state.abbr)}">${editing?'Close edit':'Edit statewide vote'}</button>
       ${row.edited?`<button class="election-btn small" data-action="reset-race-edit" data-race-kind="state" data-race-id="${escapeAttr(row.state.abbr)}">Reset vote override</button>`:''}
       ${editing?renderRaceEditForm(target):''}
-      ${row.called&&row.unallocated===row.ev?'<p class="race-pending">No list meets this state’s threshold. Seats remain unallocated; lower the threshold to allocate them.</p>':''}
-      ${row.called?`<div class="pr-party-results">${row.allocation.filter(s=>s.pct>0).map(s=>`<div class="pr-party-result" style="--party:${escapeAttr(s.party.color)}"><span class="pr-party-name" title="${escapeAttr(s.party.party)}"><i></i>${escapeHtml(s.party.short)}</span><span class="pr-vote-pct">${pct(s.pct)}</span><b class="pr-seat-count">${s.seats}<small>${s.seats===1?'seat':'seats'}</small></b><div class="pr-vote-track"><i style="width:${s.pct.toFixed(2)}%"></i></div></div>`).join('')}</div>`:`<div class="race-pending">Counting in progress. Map bubbles show provisional seats; gray seats are not allocated yet. Detailed vote shares appear when the count finishes.</div>`}`);
+      ${!national&&row.called&&row.unallocated===row.ev?'<p class="race-pending">No list meets this state’s threshold. Seats remain unallocated; lower the threshold to allocate them.</p>':''}
+      ${row.called?`<div class="pr-party-results">${row.allocation.filter(s=>s.pct>0).map(s=>`<div class="pr-party-result" style="--party:${escapeAttr(s.party.color)}"><span class="pr-party-name" title="${escapeAttr(s.party.party)}"><i></i>${escapeHtml(s.party.short)}</span><span class="pr-vote-pct">${pct(s.pct)}</span>${national?'':`<b class="pr-seat-count">${s.seats}<small>${s.seats===1?'seat':'seats'}</small></b>`}<div class="pr-vote-track"><i style="width:${s.pct.toFixed(2)}%"></i></div></div>`).join('')}</div>`:`<div class="race-pending">${national?'Counting in progress. The state colour shows the current leader; seats are projected nationally. Detailed vote shares appear when the count finishes.':'Counting in progress. Map bubbles show provisional seats; gray seats are not allocated yet. Detailed vote shares appear when the count finishes.'}</div>`}`);
     const battle=document.getElementById('battle-card');
-    if(battle){battle.classList.add('proportional-rules-card');setStableMarkup(battle,`<span class="election-kicker">How seats are allocated</span><div class="pr-rule-stats"><div><b>435</b><span>House seats</span></div><div><b>150</b><span>Senate seats</span></div></div><ul><li><b>House</b> · Population-based state delegations, using the 2020 Census apportionment.</li><li><b>Senate</b> · One guaranteed seat per state, plus 100 seats distributed by population using Sainte-Laguë. Each state’s seats are then divided between parties.</li><li><b>Party allocation</b> · ${escapeHtml(proportionalMethodLabel())} within each state; electoral blocs can pool votes. The toggle also applies when splitting a bloc’s seats among members.</li><li><b>State threshold</b> · ${proportionalThreshold()?proportionalThreshold()+'% of statewide party votes':'Off'}. Electoral blocs qualify on their combined vote; members are not tested again. Coalition-only lists qualify separately.</li></ul><p class="pr-map-note">Colored bubbles are provisional until a state completes counting; gray bubbles are unallocated seats. The simulated reporting order follows first US poll closures (Eastern time), not actual election-night returns. Custom maps are preserved.</p>`);}
+    if(battle){battle.classList.add('proportional-rules-card');setStableMarkup(battle,`<span class="election-kicker">${national?'How the national list works':'How seats are allocated'}</span><div class="pr-rule-stats"><div><b>435</b><span>House seats</span></div><div><b>150</b><span>Senate seats</span></div></div>${national?`<ul><li><b>Joint list</b> · Every state’s votes are pooled into one national count. The whole chamber is allocated at once, with no seats reserved for any state.</li><li><b>Party allocation</b> · ${escapeHtml(proportionalMethodLabel())} on the national vote; electoral blocs can pool votes and then split their seats among members.</li><li><b>National threshold</b> · ${proportionalThreshold()?proportionalThreshold()+'% of the national vote':'Off'}. Electoral blocs qualify on their combined vote.</li></ul><p class="pr-map-note">The map still shows how each state voted: its colour is the leading list in that state. Seat totals are projected from the national vote counted so far and settle when every state is in. The simulated`:`<ul><li><b>House</b> · Population-based state delegations, using the 2020 Census apportionment.</li><li><b>Senate</b> · One guaranteed seat per state, plus 100 seats distributed by population using Sainte-Laguë. Each state’s seats are then divided between parties.</li><li><b>Party allocation</b> · ${escapeHtml(proportionalMethodLabel())} within each state; electoral blocs can pool votes. The toggle also applies when splitting a bloc’s seats among members.</li><li><b>State threshold</b> · ${proportionalThreshold()?proportionalThreshold()+'% of statewide party votes':'Off'}. Electoral blocs qualify on their combined vote; members are not tested again. Coalition-only lists qualify separately.</li></ul><p class="pr-map-note">Colored bubbles are provisional until a state completes counting; gray bubbles are unallocated seats. The simulated`} reporting order follows first US poll closures (Eastern time), not actual election-night returns. Custom maps are preserved.</p>`);}
   }
 
   function renderSidebar(result) {
@@ -6851,6 +6883,13 @@
         saveState();
         return;
       }
+      if(action==='set-proportional-scope'){
+        if(!app.settings.proportionalMode)return;
+        const scope=actionEl.dataset.proportionalScope==='national'?'national':'states';
+        if(scope===app.settings.proportionalScope)return;
+        stopCount();app.settings.proportionalScope=scope;app.settings.investitureConfirmed='';app.editingRace='';
+        invalidateElectionResults();renderAll();saveState();return;
+      }
       if(action==='set-proportional-method'){
         if(!app.settings.proportionalMode)return;
         const method=actionEl.dataset.proportionalMethod==='dhondt'?'dhondt':'sainte';
@@ -6911,8 +6950,8 @@
         return;
       }
       if (action === 'map-states' || action === 'back-states' || action === 'map-counties') {
-        if (app.settings.electionCycle === 'midterms') return;
-        app.electionMode = 'president';
+        if (app.settings.electionCycle === 'midterms' && !app.settings.proportionalMode) return;
+        if (!app.settings.proportionalMode) app.electionMode = 'president';
         app.mapMode = action === 'map-counties' ? 'counties' : 'states';
         app.selectedSenateClass = '';
         app.selectedElectoralUnit = '';
